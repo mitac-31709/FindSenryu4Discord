@@ -583,11 +583,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				if spoiler {
 					replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", h[0])
 				}
-				if _, err := s.ChannelMessageSendReply(
-					m.ChannelID,
-					replyText,
-					m.Reference(),
-				); err != nil {
+				if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+					Content:   replyText,
+					Reference: m.Reference(),
+					AllowedMentions: &discordgo.MessageAllowedMentions{
+						Parse: []discordgo.AllowedMentionType{},
+					},
+					Flags: discordgo.MessageFlagsSuppressEmbeds,
+				}); err != nil {
 					logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
 					// 返信に失敗した場合、保存した川柳を削除して整合性を保つ
 					if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
@@ -699,12 +702,18 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 				logger.Warn("Failed to send message", "error", err, "channel_id", m.ChannelID)
 			}
 		} else {
-			if _, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
-				strings.Join([]string{
-					senryus[0].Kamigo,
-					senryus[1].Nakasichi,
-					senryus[2].Simogo,
-				}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", "))); err != nil {
+			if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+				Content: fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
+					strings.Join([]string{
+						senryus[0].Kamigo,
+						senryus[1].Nakasichi,
+						senryus[2].Simogo,
+					}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", ")),
+				AllowedMentions: &discordgo.MessageAllowedMentions{
+					Parse: []discordgo.AllowedMentionType{},
+				},
+				Flags: discordgo.MessageFlagsSuppressEmbeds,
+			}); err != nil {
 				logger.Warn("Failed to send senryu message", "error", err, "channel_id", m.ChannelID)
 			}
 		}
@@ -736,11 +745,14 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 			} else {
 				reply = authorName + "が「" + senryu.Kamigo + " " + senryu.Nakasichi + " " + senryu.Simogo + "」って詠んだのが最後やぞ"
 			}
-			if _, err := s.ChannelMessageSendReply(
-				m.ChannelID,
-				reply,
-				m.Reference(),
-			); err != nil {
+			if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+				Content:   reply,
+				Reference: m.Reference(),
+				AllowedMentions: &discordgo.MessageAllowedMentions{
+					Parse: []discordgo.AllowedMentionType{},
+				},
+				Flags: discordgo.MessageFlagsSuppressEmbeds,
+			}); err != nil {
 				logger.Warn("Failed to send reply", "error", err, "channel_id", m.ChannelID)
 			}
 		}
