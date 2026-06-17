@@ -699,12 +699,18 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 				logger.Warn("Failed to send message", "error", err, "channel_id", m.ChannelID)
 			}
 		} else {
-			if _, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
-				strings.Join([]string{
-					senryus[0].Kamigo,
-					senryus[1].Nakasichi,
-					senryus[2].Simogo,
-				}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", "))); err != nil {
+			if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+				Content: fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
+					strings.Join([]string{
+						senryus[0].Kamigo,
+						senryus[1].Nakasichi,
+						senryus[2].Simogo,
+					}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", ")),
+				AllowedMentions: &discordgo.MessageAllowedMentions{
+					Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers},
+				},
+				Flags: discordgo.MessageFlagsSuppressEmbeds,
+			}); err != nil {
 				logger.Warn("Failed to send senryu message", "error", err, "channel_id", m.ChannelID)
 			}
 		}
