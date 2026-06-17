@@ -710,7 +710,7 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 						senryus[2].Simogo,
 					}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", ")),
 				AllowedMentions: &discordgo.MessageAllowedMentions{
-					Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers},
+					Parse: []discordgo.AllowedMentionType{},
 				},
 				Flags: discordgo.MessageFlagsSuppressEmbeds,
 			}); err != nil {
@@ -749,7 +749,7 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 				Content:   reply,
 				Reference: m.Reference(),
 				AllowedMentions: &discordgo.MessageAllowedMentions{
-					Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers},
+					Parse: []discordgo.AllowedMentionType{},
 				},
 				Flags: discordgo.MessageFlagsSuppressEmbeds,
 			}); err != nil {
