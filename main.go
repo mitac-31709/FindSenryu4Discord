@@ -587,7 +587,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					Content:   replyText,
 					Reference: m.Reference(),
 					AllowedMentions: &discordgo.MessageAllowedMentions{
-						Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers},
+						Parse: []discordgo.AllowedMentionType{},
 					},
 					Flags: discordgo.MessageFlagsSuppressEmbeds,
 				}); err != nil {
