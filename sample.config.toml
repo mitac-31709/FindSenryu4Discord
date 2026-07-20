@@ -31,3 +31,9 @@ max_backups = 7
 
 [encryption]
 # key = ""  # hex-encoded 32-byte AES-256 key (openssl rand -hex 32)
+
+[import]
+# Bot user IDs whose "川柳を検出しました！" replies are imported.
+# Official bot example: 480281065588785162
+# Empty = only this bot's own messages
+# source_bot_ids = ["480281065588785162"]
