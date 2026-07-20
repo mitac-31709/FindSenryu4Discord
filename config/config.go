@@ -27,6 +27,7 @@ type Config struct {
 	Server     ServerConfig     `koanf:"server"`
 	Backup     BackupConfig     `koanf:"backup"`
 	Encryption EncryptionConfig `koanf:"encryption"`
+	Import     ImportConfig     `koanf:"import"`
 }
 
 // DiscordConfig holds Discord-related configuration
@@ -75,6 +76,13 @@ type BackupConfig struct {
 // EncryptionConfig holds encryption configuration for senryu data
 type EncryptionConfig struct {
 	Key string `koanf:"key"` // Hex-encoded 32-byte AES-256 key (empty = disabled)
+}
+
+// ImportConfig holds settings for channel history import.
+type ImportConfig struct {
+	// SourceBotIDs are Discord user IDs whose detection replies should be imported.
+	// Empty means only the running bot's own messages are matched.
+	SourceBotIDs []string `koanf:"source_bot_ids"`
 }
 
 // Load loads configuration from file and environment variables

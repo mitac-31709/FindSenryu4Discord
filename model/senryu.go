@@ -4,14 +4,15 @@ import "time"
 
 // Senryu is struct of senryu.
 type Senryu struct {
-	ID        int       `gorm:"primaryKey;autoIncrement"`
-	ServerID  string    `gorm:"column:server_id;index"`
-	AuthorID  string    `gorm:"column:author_id;index"`
-	Kamigo    string    `gorm:"column:kamigo"`
-	Nakasichi string    `gorm:"column:nakasichi"`
-	Simogo    string    `gorm:"column:simogo"`
-	Spoiler   *bool     `gorm:"column:spoiler;not null"`
-	CreatedAt time.Time `gorm:"column:created_at"`
+	ID              int       `gorm:"primaryKey;autoIncrement"`
+	ServerID        string    `gorm:"column:server_id;index"`
+	AuthorID        string    `gorm:"column:author_id;index"`
+	Kamigo          string    `gorm:"column:kamigo"`
+	Nakasichi       string    `gorm:"column:nakasichi"`
+	Simogo          string    `gorm:"column:simogo"`
+	Spoiler         *bool     `gorm:"column:spoiler;not null"`
+	SourceMessageID string    `gorm:"column:source_message_id"` // Bot detection reply ID (import dedup)
+	CreatedAt       time.Time `gorm:"column:created_at"`
 }
 
 // MutedChannel is struct of muted channel.

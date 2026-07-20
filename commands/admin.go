@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -65,6 +66,33 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 				},
 				{
+					Name:        "import",
+					Description: "チャンネル履歴から過去の川柳検出をDBへ取り込みます",
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Name:        "channel_id",
+							Description: "取り込むチャンネルのID（開発者モードでコピー）",
+							Type:        discordgo.ApplicationCommandOptionString,
+							Required:    true,
+						},
+						{
+							Name:        "dry_run",
+							Description: "実際には保存せず件数だけ確認する",
+							Type:        discordgo.ApplicationCommandOptionBoolean,
+							Required:    false,
+						},
+						{
+							Name:        "limit",
+							Description: "走査するメッセージ上限（デフォルト5000、最大50000）",
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Required:    false,
+							MinValue:    floatPtr(1),
+							MaxValue:    50000,
+						},
+					},
+				},
+				{
 					Name:        "contact-message",
 					Description: "/contactコマンドに表示する追加メッセージを管理します",
 					Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
@@ -123,9 +151,106 @@ func HandleAdminCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		handleStatsCommand(s, i)
 	case "backup":
 		handleBackupCommand(s, i)
+	case "import":
+		handleImportCommand(s, i, options[0].Options)
 	case "contact-message":
 		handleContactMessageCommand(s, i, options[0].Options)
 	}
+}
+
+func floatPtr(v float64) *float64 { return &v }
+
+func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, options []*discordgo.ApplicationCommandInteractionDataOption) {
+	var channelID string
+	var dryRun bool
+	var limit int
+
+	for _, opt := range options {
+		switch opt.Name {
+		case "channel_id":
+			channelID = strings.TrimSpace(opt.StringValue())
+		case "dry_run":
+			dryRun = opt.BoolValue()
+		case "limit":
+			limit = int(opt.IntValue())
+		}
+	}
+
+	if channelID == "" || !isSnowflake(channelID) {
+		respondError(s, i, "有効な channel_id を指定してください（数字のみの Discord ID）")
+		return
+	}
+
+	conf := config.GetConf()
+	sourceBotIDs := append([]string{}, conf.Import.SourceBotIDs...)
+	if len(sourceBotIDs) == 0 && s.State != nil && s.State.User != nil {
+		sourceBotIDs = []string{s.State.User.ID}
+	}
+	if len(sourceBotIDs) == 0 {
+		respondError(s, i, "取り込む Bot のユーザー ID を特定できません。config の import.source_bot_ids を設定してください")
+		return
+	}
+
+	// Defer: history scan can exceed the 3s interaction timeout
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
+	}); err != nil {
+		logger.Error("Failed to defer import response", "error", err)
+		return
+	}
+
+	result, err := service.ImportChannelHistory(s, service.ImportOptions{
+		ChannelID:    channelID,
+		SourceBotIDs: sourceBotIDs,
+		DryRun:       dryRun,
+		Limit:        limit,
+	})
+	if err != nil {
+		logger.Error("Channel import failed", "error", err, "channel_id", channelID)
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: strPtr("インポートに失敗しました: " + err.Error()),
+		})
+		return
+	}
+
+	title := "Import Complete"
+	if dryRun {
+		title = "Import Dry Run"
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title:       title,
+		Description: fmt.Sprintf("channel_id: `%s`\nsource_bot_ids: `%s`", channelID, strings.Join(sourceBotIDs, "`, `")),
+		Color:       0x5865F2,
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Scanned", Value: fmt.Sprintf("%d", result.Scanned), Inline: true},
+			{Name: "Matched", Value: fmt.Sprintf("%d", result.Matched), Inline: true},
+			{Name: "Imported", Value: fmt.Sprintf("%d", result.Imported), Inline: true},
+			{Name: "Skipped (duplicate)", Value: fmt.Sprintf("%d", result.SkippedDuplicate), Inline: true},
+			{Name: "Skipped (no parent)", Value: fmt.Sprintf("%d", result.SkippedNoParent), Inline: true},
+			{Name: "Errors", Value: fmt.Sprintf("%d", result.Errors), Inline: true},
+		},
+	}
+
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Embeds: &[]*discordgo.MessageEmbed{embed},
+	})
+}
+
+func isSnowflake(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return len(s) >= 17 && len(s) <= 20
 }
 
 func handleStatsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {

@@ -103,8 +103,26 @@ func CreateSenryu(s model.Senryu) (model.Senryu, error) {
 		"id", s.ID,
 		"server_id", s.ServerID,
 		"author_id", s.AuthorID,
+		"source_message_id", s.SourceMessageID,
 	)
 	return s, nil
+}
+
+// ExistsBySourceMessageID reports whether a senryu with the given source message ID already exists.
+func ExistsBySourceMessageID(sourceMessageID string) (bool, error) {
+	if sourceMessageID == "" {
+		return false, nil
+	}
+	metrics.RecordDatabaseOperation("exists_by_source_message_id")
+
+	var count int
+	if err := db.DB.Model(&model.Senryu{}).
+		Where("source_message_id = ?", sourceMessageID).
+		Count(&count).Error; err != nil {
+		metrics.RecordError("database")
+		return false, errors.Wrap(err, "failed to check source_message_id")
+	}
+	return count > 0, nil
 }
 
 // GetLastSenryu returns the last senryu in a server
