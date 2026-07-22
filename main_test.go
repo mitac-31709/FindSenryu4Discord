@@ -329,3 +329,31 @@ func TestIsParentChannelMuted_自チャンネルのミュートは親に影響�
 		t.Error("muting the thread itself should not affect parent mute check")
 	}
 }
+
+func TestParseYomeCount(t *testing.T) {
+	const max = 10
+	tests := []struct {
+		content     string
+		wantCount   int
+		wantOK      bool
+		wantOutRange bool
+	}{
+		{content: "詠め", wantCount: 1, wantOK: true},
+		{content: "5回詠め", wantCount: 5, wantOK: true},
+		{content: "10回詠め", wantCount: 10, wantOK: true},
+		{content: "11回詠め", wantCount: 11, wantOK: true, wantOutRange: true},
+		{content: "0回詠め", wantCount: 0, wantOK: true, wantOutRange: true},
+		{content: "回詠め", wantOK: false},
+		{content: "詠むな", wantOK: false},
+		{content: "あ回詠め", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.content, func(t *testing.T) {
+			count, ok, outOfRange := parseYomeCount(tt.content, max)
+			if ok != tt.wantOK || outOfRange != tt.wantOutRange || count != tt.wantCount {
+				t.Errorf("parseYomeCount(%q) = (%d, %v, %v), want (%d, %v, %v)",
+					tt.content, count, ok, outOfRange, tt.wantCount, tt.wantOK, tt.wantOutRange)
+			}
+		})
+	}
+}

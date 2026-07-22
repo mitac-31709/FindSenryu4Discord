@@ -425,6 +425,84 @@ func TestDeleteSenryu_暗号化有効時でも削除できる(t *testing.T) {
 	}
 }
 
+func TestDeleteSenryusMatching_平文と暗号化の該当句だけ消える(t *testing.T) {
+	setupSenryuTestDB(t)
+	if err := crypto.Init(""); err != nil {
+		t.Fatalf("crypto init failed: %v", err)
+	}
+
+	spoiler := false
+	keep, err := CreateSenryu(model.Senryu{
+		ServerID:  "server1",
+		AuthorID:  "author1",
+		Kamigo:    "残す句の",
+		Nakasichi: "上中下です",
+		Simogo:    "消えない",
+		Spoiler:   &spoiler,
+	})
+	if err != nil {
+		t.Fatalf("CreateSenryu keep failed: %v", err)
+	}
+	if _, err := CreateSenryu(model.Senryu{
+		ServerID:  "server1",
+		AuthorID:  "author1",
+		Kamigo:    "テストです",
+		Nakasichi: "この川柳に",
+		Simogo:    "反応は",
+		Spoiler:   &spoiler,
+	}); err != nil {
+		t.Fatalf("CreateSenryu excluded failed: %v", err)
+	}
+
+	n, err := DeleteSenryusMatching("テストです", "この川柳に", "反応は")
+	if err != nil {
+		t.Fatalf("DeleteSenryusMatching failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 deleted, got %d", n)
+	}
+	if _, err := GetSenryuByID(keep.ID, "server1"); err != nil {
+		t.Fatalf("keep senryu should remain: %v", err)
+	}
+
+	// encrypted path
+	if err := crypto.Init(testEncryptionKey); err != nil {
+		t.Fatalf("crypto init failed: %v", err)
+	}
+	if _, err := CreateSenryu(model.Senryu{
+		ServerID:  "server2",
+		AuthorID:  "author1",
+		Kamigo:    "テストです",
+		Nakasichi: "この川柳に",
+		Simogo:    "反応は",
+		Spoiler:   &spoiler,
+	}); err != nil {
+		t.Fatalf("CreateSenryu encrypted excluded failed: %v", err)
+	}
+	keep2, err := CreateSenryu(model.Senryu{
+		ServerID:  "server2",
+		AuthorID:  "author1",
+		Kamigo:    "暗号化でも",
+		Nakasichi: "残すべき句",
+		Simogo:    "ですよね",
+		Spoiler:   &spoiler,
+	})
+	if err != nil {
+		t.Fatalf("CreateSenryu encrypted keep failed: %v", err)
+	}
+
+	n, err = DeleteSenryusMatching("テストです", "この川柳に", "反応は")
+	if err != nil {
+		t.Fatalf("DeleteSenryusMatching encrypted failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 encrypted deleted, got %d", n)
+	}
+	if _, err := GetSenryuByID(keep2.ID, "server2"); err != nil {
+		t.Fatalf("encrypted keep senryu should remain: %v", err)
+	}
+}
+
 func TestGetRanking_暗号化有効時でも集計できる(t *testing.T) {
 	setupSenryuTestDB(t)
 	if err := crypto.Init(testEncryptionKey); err != nil {

@@ -193,6 +193,11 @@ func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResul
 				continue
 			}
 
+			if IsExcludedSenryuParts(parsed.Kamigo, parsed.Nakasichi, parsed.Simogo) {
+				logger.Debug("Import: skipping excluded test senryu", "message_id", msg.ID)
+				continue
+			}
+
 			spoiler := parsed.Spoiler
 			senryu := model.Senryu{
 				ServerID:        guildID,

@@ -2,6 +2,7 @@
 token = ""
 playing = ""
 welcome_enabled = true  # サーバー参加時にウェルカムメッセージを送信するか
+yome_max = 10  # 「n回詠め」の上限
 
 [database]
 driver = "sqlite3"  # sqlite3 or postgres

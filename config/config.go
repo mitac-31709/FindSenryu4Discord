@@ -35,6 +35,7 @@ type DiscordConfig struct {
 	Token          string `koanf:"token"`
 	Playing        string `koanf:"playing"`
 	WelcomeEnabled *bool  `koanf:"welcome_enabled"`
+	YomeMax        int    `koanf:"yome_max"` // max for "n回詠め" (default 10)
 }
 
 // DatabaseConfig holds database configuration
@@ -130,6 +131,9 @@ func boolPtr(v bool) *bool { return &v }
 func setDefaults(c *Config) {
 	if c.Discord.WelcomeEnabled == nil {
 		c.Discord.WelcomeEnabled = boolPtr(true)
+	}
+	if c.Discord.YomeMax <= 0 {
+		c.Discord.YomeMax = 10
 	}
 	if c.Database.Driver == "" {
 		c.Database.Driver = "sqlite3"

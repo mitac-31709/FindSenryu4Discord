@@ -328,6 +328,47 @@ func GetSenryuByID(id int, serverID string) (*model.Senryu, error) {
 	return &s, nil
 }
 
+// DeleteSenryusMatching deletes all senryus whose decrypted lines equal the given parts.
+func DeleteSenryusMatching(kamigo, nakasichi, simogo string) (int64, error) {
+	metrics.RecordDatabaseOperation("delete_senryus_matching")
+
+	var all []model.Senryu
+	if err := db.DB.Find(&all).Error; err != nil {
+		metrics.RecordError("database")
+		logger.Error("Failed to list senryus for matching delete", "error", err)
+		return 0, errors.Wrap(err, "failed to list senryus for matching delete")
+	}
+
+	var deleted int64
+	for i := range all {
+		s := all[i]
+		if err := decryptSenryuFields(&s); err != nil {
+			logger.Warn("Failed to decrypt senryu while matching delete", "error", err, "id", s.ID)
+			continue
+		}
+		if s.Kamigo != kamigo || s.Nakasichi != nakasichi || s.Simogo != simogo {
+			continue
+		}
+		result := db.DB.Where("id = ?", s.ID).Delete(&model.Senryu{})
+		if result.Error != nil {
+			metrics.RecordError("database")
+			logger.Error("Failed to delete matching senryu", "error", result.Error, "id", s.ID)
+			return deleted, errors.Wrap(result.Error, "failed to delete matching senryu")
+		}
+		deleted += result.RowsAffected
+	}
+
+	if deleted > 0 {
+		logger.Info("Deleted matching senryus",
+			"count", deleted,
+			"kamigo", kamigo,
+			"nakasichi", nakasichi,
+			"simogo", simogo,
+		)
+	}
+	return deleted, nil
+}
+
 // DeleteSenryu deletes a senryu by ID within a server
 func DeleteSenryu(id int, serverID string) error {
 	metrics.RecordDatabaseOperation("delete_senryu")

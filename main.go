@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -187,6 +188,13 @@ func main() {
 	if err := db.Init(); err != nil {
 		logger.Error("Failed to initialize database", "error", err)
 		os.Exit(1)
+	}
+
+	// Remove test senryu rows that must not remain in the database
+	if n, err := service.DeleteSenryusMatching("テストです", "この川柳に", "反応は"); err != nil {
+		logger.Error("Failed to clean up excluded test senryus", "error", err)
+	} else if n > 0 {
+		logger.Info("Cleaned up excluded test senryus", "count", n)
 	}
 
 	// Start health check server
@@ -562,26 +570,43 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				return
 			}
 			h := findHaikuSafe(content, []int{5, 7, 5})
-			if len(h) != 0 && !haikuSpansNewline(content, h[0]) {
-				senryu := strings.Split(h[0], " ")
-				created, err := service.CreateSenryu(
-					model.Senryu{
-						ServerID:  m.GuildID,
-						AuthorID:  m.Author.ID,
-						Kamigo:    senryu[0],
-						Nakasichi: senryu[1],
-						Simogo:    senryu[2],
-						Spoiler:   &spoiler,
-					},
-				)
-				if err != nil {
-					logger.Error("Failed to create senryu", "error", err)
-					metrics.RecordError("database")
-					return
+			seen := make(map[string]bool)
+			for _, match := range h {
+				if seen[match] || haikuSpansNewline(content, match) {
+					continue
 				}
-				replyText := fmt.Sprintf("川柳を検出しました！\n「%s」", h[0])
+				seen[match] = true
+
+				parts := strings.Split(match, " ")
+				if len(parts) != 3 {
+					continue
+				}
+
+				var createdID int
+				saved := false
+				if !service.IsExcludedSenryu(match) {
+					created, err := service.CreateSenryu(
+						model.Senryu{
+							ServerID:  m.GuildID,
+							AuthorID:  m.Author.ID,
+							Kamigo:    parts[0],
+							Nakasichi: parts[1],
+							Simogo:    parts[2],
+							Spoiler:   &spoiler,
+						},
+					)
+					if err != nil {
+						logger.Error("Failed to create senryu", "error", err)
+						metrics.RecordError("database")
+						continue
+					}
+					createdID = created.ID
+					saved = true
+				}
+
+				replyText := fmt.Sprintf("川柳を検出しました！\n「%s」", match)
 				if spoiler {
-					replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", h[0])
+					replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", match)
 				}
 				if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
 					Content:   replyText,
@@ -592,13 +617,13 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					Flags: discordgo.MessageFlagsSuppressEmbeds,
 				}); err != nil {
 					logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
-					// 返信に失敗した場合、保存した川柳を削除して整合性を保つ
-					if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
-						logger.Error("Failed to rollback senryu after reply failure", "error", delErr, "senryu_id", created.ID)
-					} else {
-						logger.Info("Rolled back senryu after reply failure", "senryu_id", created.ID, "channel_id", m.ChannelID)
+					if saved {
+						if delErr := service.DeleteSenryu(createdID, m.GuildID); delErr != nil {
+							logger.Error("Failed to rollback senryu after reply failure", "error", delErr, "senryu_id", createdID)
+						} else {
+							logger.Info("Rolled back senryu after reply failure", "senryu_id", createdID, "channel_id", m.ChannelID)
+						}
 					}
-					// Bot権限不足エラーの場合、該当チャンネルを自動ミュート
 					if isBotPermissionError(err) {
 						if muteErr := service.ToMute(m.ChannelID, m.GuildID); muteErr != nil {
 							logger.Error("Failed to auto-mute channel after permission error", "error", muteErr, "channel_id", m.ChannelID)
@@ -606,6 +631,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 							metrics.RecordAutoMute()
 							logger.Warn("Auto-muted channel due to missing Bot permissions", "channel_id", m.ChannelID, "server_id", m.GuildID)
 						}
+						return
 					}
 				}
 			}
@@ -689,36 +715,7 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
-	switch m.Content {
-	case "詠め":
-		senryus, err := service.GetThreeRandomSenryus(m.GuildID)
-		if err != nil {
-			logger.Error("Failed to get random senryus", "error", err)
-			s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
-			return true
-		}
-		if len(senryus) == 0 {
-			if _, err := s.ChannelMessageSend(m.ChannelID, "まだ誰も詠んでいません。あなたが先に詠んでください。"); err != nil {
-				logger.Warn("Failed to send message", "error", err, "channel_id", m.ChannelID)
-			}
-		} else {
-			if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
-				Content: fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
-					strings.Join([]string{
-						senryus[0].Kamigo,
-						senryus[1].Nakasichi,
-						senryus[2].Simogo,
-					}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", ")),
-				AllowedMentions: &discordgo.MessageAllowedMentions{
-					Parse: []discordgo.AllowedMentionType{},
-				},
-				Flags: discordgo.MessageFlagsSuppressEmbeds,
-			}); err != nil {
-				logger.Warn("Failed to send senryu message", "error", err, "channel_id", m.ChannelID)
-			}
-		}
-		return true
-	case "詠むな":
+	if m.Content == "詠むな" {
 		senryu, err := service.GetLastSenryu(m.GuildID)
 		if err != nil {
 			if errors.Is(err, service.ErrSenryuNotFound) {
@@ -758,7 +755,73 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 		}
 		return true
 	}
-	return false
+
+	yomeMax := config.GetConf().Discord.YomeMax
+	count, ok, outOfRange := parseYomeCount(m.Content, yomeMax)
+	if !ok {
+		return false
+	}
+	if outOfRange {
+		msg := fmt.Sprintf("詠めるのは1〜%d回までです。", yomeMax)
+		if _, err := s.ChannelMessageSend(m.ChannelID, msg); err != nil {
+			logger.Warn("Failed to send yome limit message", "error", err, "channel_id", m.ChannelID)
+		}
+		return true
+	}
+
+	for i := 0; i < count; i++ {
+		senryus, err := service.GetThreeRandomSenryus(m.GuildID)
+		if err != nil {
+			logger.Error("Failed to get random senryus", "error", err)
+			s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
+			return true
+		}
+		if len(senryus) == 0 {
+			if _, err := s.ChannelMessageSend(m.ChannelID, "まだ誰も詠んでいません。あなたが先に詠んでください。"); err != nil {
+				logger.Warn("Failed to send message", "error", err, "channel_id", m.ChannelID)
+			}
+			return true
+		}
+		if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+			Content: fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
+				strings.Join([]string{
+					senryus[0].Kamigo,
+					senryus[1].Nakasichi,
+					senryus[2].Simogo,
+				}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", ")),
+			AllowedMentions: &discordgo.MessageAllowedMentions{
+				Parse: []discordgo.AllowedMentionType{},
+			},
+			Flags: discordgo.MessageFlagsSuppressEmbeds,
+		}); err != nil {
+			logger.Warn("Failed to send senryu message", "error", err, "channel_id", m.ChannelID)
+		}
+	}
+	return true
+}
+
+// parseYomeCount parses "詠め" or "n回詠め".
+// ok=false means the content is not a yome command.
+// outOfRange=true means it matched the pattern but n is outside [1, max].
+func parseYomeCount(content string, max int) (count int, ok bool, outOfRange bool) {
+	if content == "詠め" {
+		return 1, true, false
+	}
+	if !strings.HasSuffix(content, "回詠め") {
+		return 0, false, false
+	}
+	numStr := strings.TrimSuffix(content, "回詠め")
+	if numStr == "" {
+		return 0, false, false
+	}
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, false, false
+	}
+	if n < 1 || n > max {
+		return n, true, true
+	}
+	return n, true, false
 }
 
 // resolveDisplayName returns the best display name for a guild member,
