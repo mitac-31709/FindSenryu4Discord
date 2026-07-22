@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/cockroachdb/errors"
 	"github.com/u16-io/FindSenryu4Discord/commands"
@@ -21,6 +19,7 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/pkg/adminnotify"
 	"github.com/u16-io/FindSenryu4Discord/pkg/backup"
 	"github.com/u16-io/FindSenryu4Discord/pkg/crypto"
+	"github.com/u16-io/FindSenryu4Discord/pkg/detect"
 	"github.com/u16-io/FindSenryu4Discord/pkg/health"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
@@ -145,6 +144,7 @@ var (
 		"delete":  commands.HandleDeleteCommand,
 		"doctor":  commands.HandleDoctorCommand,
 		"detect":  commands.HandleDetectCommand,
+		"rescan":  commands.HandleRescanCommand,
 		"admin":   commands.HandleAdminCommand,
 		"contact": commands.HandleContactCommand,
 	}
@@ -280,6 +280,7 @@ func main() {
 			DefaultMemberPermissions: &adminPermission,
 		})
 	}
+	userCommands = append(userCommands, commands.RescanCommand())
 
 	// Register user commands (global)
 	logger.Info("Registering user slash commands...")
@@ -540,11 +541,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	// Check if this channel type is enabled for the guild
 	if !service.IsChannelTypeEnabled(m.GuildID, ch.Type) {
+		logger.Debug("Skip detection: channel type disabled",
+			"guild_id", m.GuildID, "channel_id", m.ChannelID, "channel_type", ch.Type)
 		return
 	}
 
 	// Skip senryu features in admin guild
 	if m.GuildID == permissions.GetAdminGuildID() {
+		logger.Debug("Skip detection: admin guild", "guild_id", m.GuildID)
 		return
 	}
 
@@ -552,88 +556,92 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	if !service.IsMute(m.ChannelID) && !isParentChannelMuted(ch) {
-		if m.Author.ID != s.State.User.ID {
-			if service.IsDetectionOptedOut(m.GuildID, m.Author.ID) {
-				return
-			}
-			if containsDiscordTokens(m.Content) {
-				return
-			}
-			content := m.Content
-			spoiler := containsSpoiler(content)
-			if spoiler {
-				content = stripSpoilerMarkers(content)
-			}
-			content = stripCodeBlocks(content)
-			if !isJapaneseRich(content) {
-				return
-			}
-			h := findHaikuSafe(content, []int{5, 7, 5})
-			seen := make(map[string]bool)
-			for _, match := range h {
-				if seen[match] || haikuSpansNewline(content, match) {
-					continue
-				}
-				seen[match] = true
+	if service.IsMute(m.ChannelID) || isParentChannelMuted(ch) {
+		logger.Debug("Skip detection: muted",
+			"guild_id", m.GuildID, "channel_id", m.ChannelID)
+		return
+	}
+	if m.Author.ID == s.State.User.ID {
+		return
+	}
+	if service.IsDetectionOptedOut(m.GuildID, m.Author.ID) {
+		logger.Debug("Skip detection: user opted out",
+			"guild_id", m.GuildID, "user_id", m.Author.ID)
+		return
+	}
+	if detect.ContainsDiscordTokens(m.Content) {
+		logger.Debug("Skip detection: discord tokens",
+			"guild_id", m.GuildID, "channel_id", m.ChannelID)
+		return
+	}
+	content, spoiler := detect.PrepareContent(m.Content)
+	if !detect.IsJapaneseRich(content) {
+		logger.Debug("Skip detection: not japanese-rich",
+			"guild_id", m.GuildID, "channel_id", m.ChannelID, "content_len", len(content))
+		return
+	}
+	h := detect.FindHaiku(content)
+	if len(h) == 0 {
+		logger.Debug("Skip detection: haiku.Find returned no matches",
+			"guild_id", m.GuildID, "channel_id", m.ChannelID, "content_len", len(content))
+		return
+	}
+	for _, match := range detect.FilterValidMatches(content, h) {
+		parts := strings.Split(match, " ")
+		if len(parts) != 3 {
+			continue
+		}
 
-				parts := strings.Split(match, " ")
-				if len(parts) != 3 {
-					continue
-				}
+		var createdID int
+		saved := false
+		if !service.IsExcludedSenryu(match) {
+			created, err := service.CreateSenryu(
+				model.Senryu{
+					ServerID:  m.GuildID,
+					AuthorID:  m.Author.ID,
+					Kamigo:    parts[0],
+					Nakasichi: parts[1],
+					Simogo:    parts[2],
+					Spoiler:   &spoiler,
+				},
+			)
+			if err != nil {
+				logger.Error("Failed to create senryu", "error", err)
+				metrics.RecordError("database")
+				continue
+			}
+			createdID = created.ID
+			saved = true
+		}
 
-				var createdID int
-				saved := false
-				if !service.IsExcludedSenryu(match) {
-					created, err := service.CreateSenryu(
-						model.Senryu{
-							ServerID:  m.GuildID,
-							AuthorID:  m.Author.ID,
-							Kamigo:    parts[0],
-							Nakasichi: parts[1],
-							Simogo:    parts[2],
-							Spoiler:   &spoiler,
-						},
-					)
-					if err != nil {
-						logger.Error("Failed to create senryu", "error", err)
-						metrics.RecordError("database")
-						continue
-					}
-					createdID = created.ID
-					saved = true
+		replyText := fmt.Sprintf("川柳を検出しました！\n「%s」", match)
+		if spoiler {
+			replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", match)
+		}
+		if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+			Content:   replyText,
+			Reference: m.Reference(),
+			AllowedMentions: &discordgo.MessageAllowedMentions{
+				Parse: []discordgo.AllowedMentionType{},
+			},
+			Flags: discordgo.MessageFlagsSuppressEmbeds,
+		}); err != nil {
+			logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
+			if saved {
+				if delErr := service.DeleteSenryu(createdID, m.GuildID); delErr != nil {
+					logger.Error("Failed to rollback senryu after reply failure", "error", delErr, "senryu_id", createdID)
+				} else {
+					logger.Info("Rolled back senryu after reply failure", "senryu_id", createdID, "channel_id", m.ChannelID)
 				}
-
-				replyText := fmt.Sprintf("川柳を検出しました！\n「%s」", match)
-				if spoiler {
-					replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", match)
+			}
+			if isBotPermissionError(err) {
+				if muteErr := service.ToMute(m.ChannelID, m.GuildID); muteErr != nil {
+					logger.Error("Failed to auto-mute channel after permission error", "error", muteErr, "channel_id", m.ChannelID)
+				} else {
+					metrics.RecordAutoMute()
+					logger.Warn("Auto-muted channel due to missing Bot permissions", "channel_id", m.ChannelID, "server_id", m.GuildID)
 				}
-				if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
-					Content:   replyText,
-					Reference: m.Reference(),
-					AllowedMentions: &discordgo.MessageAllowedMentions{
-						Parse: []discordgo.AllowedMentionType{},
-					},
-					Flags: discordgo.MessageFlagsSuppressEmbeds,
-				}); err != nil {
-					logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
-					if saved {
-						if delErr := service.DeleteSenryu(createdID, m.GuildID); delErr != nil {
-							logger.Error("Failed to rollback senryu after reply failure", "error", delErr, "senryu_id", createdID)
-						} else {
-							logger.Info("Rolled back senryu after reply failure", "senryu_id", createdID, "channel_id", m.ChannelID)
-						}
-					}
-					if isBotPermissionError(err) {
-						if muteErr := service.ToMute(m.ChannelID, m.GuildID); muteErr != nil {
-							logger.Error("Failed to auto-mute channel after permission error", "error", muteErr, "channel_id", m.ChannelID)
-						} else {
-							metrics.RecordAutoMute()
-							logger.Warn("Auto-muted channel due to missing Bot permissions", "channel_id", m.ChannelID, "server_id", m.GuildID)
-						}
-						return
-					}
-				}
+				return
 			}
 		}
 	}
@@ -853,85 +861,6 @@ func sliceUnique(target []string) (unique []string) {
 		}
 	}
 	return unique
-}
-
-// containsDiscordTokens reports whether s contains Discord-specific tokens
-// (mentions, channels, roles, custom emoji, URLs) that should exclude
-// the message from haiku detection.
-var reDiscordTokens = regexp.MustCompile(
-	`<@!?\d+>` + // user mentions
-		`|<#\d+>` + // channel mentions
-		`|<@&\d+>` + // role mentions
-		`|<a?:\w+:\d+>` + // custom emoji
-		`|https?://\S+`, // URLs
-)
-
-func containsDiscordTokens(s string) bool {
-	return reDiscordTokens.MatchString(s)
-}
-
-// findHaikuSafe wraps haiku.Find with recover to prevent panics from crashing the bot.
-func findHaikuSafe(content string, rule []int) (result []string) {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Warn("Recovered from panic in haiku.Find", "error", r, "content_len", len(content))
-			result = nil
-		}
-	}()
-	return haiku.Find(content, rule)
-}
-
-var (
-	reFencedCodeBlock = regexp.MustCompile("(?s)```.*?```")
-	reInlineCode      = regexp.MustCompile("`[^`]+`")
-)
-
-func stripCodeBlocks(s string) string {
-	s = reFencedCodeBlock.ReplaceAllString(s, "")
-	s = reInlineCode.ReplaceAllString(s, "")
-	return s
-}
-
-var reSpoiler = regexp.MustCompile(`\|\|.+?\|\|`)
-
-func containsSpoiler(s string) bool {
-	return reSpoiler.MatchString(s)
-}
-
-func stripSpoilerMarkers(s string) string {
-	return strings.ReplaceAll(s, "||", "")
-}
-
-func haikuSpansNewline(content, haikuResult string) bool {
-	if !strings.Contains(content, "\n") {
-		return false
-	}
-	matched := strings.ReplaceAll(haikuResult, " ", "")
-	return !strings.Contains(content, matched)
-}
-
-// japaneseCharRatioThreshold is the minimum ratio of Japanese characters
-// (Hiragana, Katakana, Han) to total non-space characters required for a
-// message to be considered "Japanese-rich" and eligible for senryu detection.
-const japaneseCharRatioThreshold = 0.5
-
-func isJapaneseRich(s string) bool {
-	var total, jp int
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			continue
-		}
-		total++
-		if unicode.In(r, unicode.Hiragana, unicode.Katakana, unicode.Han) ||
-			r == 'ー' || // Katakana long vowel mark (U+30FC)
-			r == '・' { // Katakana middle dot (U+30FB)
-			jp++
-		}
-	}
-	if total == 0 {
-		return false
-	}
-	return float64(jp)/float64(total) >= japaneseCharRatioThreshold
 }
 
 // isBotPermissionError returns true if the error is a Discord API error

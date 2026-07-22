@@ -85,6 +85,12 @@ n回詠め
 
 > Bot管理者にお問い合わせを送信します。モーダルで件名と内容を入力でき、管理チャンネルに転送されます。`contact_channel_id` が設定されている場合のみ利用可能です。
 
+```
+/rescan message_id:[ID]
+```
+
+> 指定メッセージを川柳検出パイプラインで再判定します。結果はチャンネルに公開され、`haiku.Find` の詳細ログも表示されます。検出された句は DB に保存します（個別の「川柳を検出しました！」返信はしません）。誰でも実行できます。
+
 ### 管理者コマンド
 
 管理用ギルド (`admin.guild_id`) でのみ使用可能です。`admin.owner_ids` に登録されたユーザーのみ実行できます。
@@ -130,7 +136,7 @@ path = "data/senryu.db"
 # dsn = "host=localhost user=findsenryu dbname=findsenryu sslmode=disable"
 
 [log]
-level = "info"   # debug, info, warn, error
+level = "info"   # debug, info, warn, error（検出スキップ理由は debug）
 format = "text"  # json, text
 
 [admin]

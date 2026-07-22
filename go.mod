@@ -49,3 +49,5 @@ require (
 	golang.org/x/text v0.32.0 // indirect
 	google.golang.org/protobuf v1.36.7 // indirect
 )
+
+replace github.com/0x307e/go-haiku => ./third_party/go-haiku

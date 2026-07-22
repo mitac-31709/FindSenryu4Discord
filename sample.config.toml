@@ -10,7 +10,7 @@ path = "data/senryu.db"
 # dsn = "host=localhost user=findsenryu dbname=findsenryu sslmode=disable"
 
 [log]
-level = "info"  # debug, info, warn, error
+level = "info"  # debug, info, warn, error（検出スキップ理由は debug）
 format = "text"  # json, text
 
 [admin]
