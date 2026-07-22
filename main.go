@@ -581,43 +581,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 	h := detect.FindHaiku(content)
-	if len(h) == 0 {
+	doubleShots := detect.FindDoubleShots(content)
+	if len(h) == 0 && len(doubleShots) == 0 {
 		logger.Debug("Skip detection: haiku.Find returned no matches",
 			"guild_id", m.GuildID, "channel_id", m.ChannelID, "content_len", len(content))
 		return
 	}
-	for _, match := range detect.FilterValidMatches(content, h) {
-		parts := strings.Split(match, " ")
-		if len(parts) != 3 {
-			continue
-		}
 
-		var createdID int
-		saved := false
-		if !service.IsExcludedSenryu(match) {
-			created, err := service.CreateSenryu(
-				model.Senryu{
-					ServerID:  m.GuildID,
-					AuthorID:  m.Author.ID,
-					Kamigo:    parts[0],
-					Nakasichi: parts[1],
-					Simogo:    parts[2],
-					Spoiler:   &spoiler,
-				},
-			)
-			if err != nil {
-				logger.Error("Failed to create senryu", "error", err)
-				metrics.RecordError("database")
-				continue
-			}
-			createdID = created.ID
-			saved = true
-		}
-
-		replyText := fmt.Sprintf("川柳を検出しました！\n「%s」", match)
-		if spoiler {
-			replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", match)
-		}
+	sendReply := func(replyText string, createdIDs []int) bool {
 		if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
 			Content:   replyText,
 			Reference: m.Reference(),
@@ -627,7 +598,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			Flags: discordgo.MessageFlagsSuppressEmbeds,
 		}); err != nil {
 			logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
-			if saved {
+			for _, createdID := range createdIDs {
 				if delErr := service.DeleteSenryu(createdID, m.GuildID); delErr != nil {
 					logger.Error("Failed to rollback senryu after reply failure", "error", delErr, "senryu_id", createdID)
 				} else {
@@ -641,8 +612,65 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					metrics.RecordAutoMute()
 					logger.Warn("Auto-muted channel due to missing Bot permissions", "channel_id", m.ChannelID, "server_id", m.GuildID)
 				}
-				return
+				return false
 			}
+		}
+		return true
+	}
+
+	saveSenryu := func(match string) (id int, saved bool) {
+		parts := strings.Split(match, " ")
+		if len(parts) != 3 || service.IsExcludedSenryu(match) {
+			return 0, false
+		}
+		created, err := service.CreateSenryu(model.Senryu{
+			ServerID:  m.GuildID,
+			AuthorID:  m.Author.ID,
+			Kamigo:    parts[0],
+			Nakasichi: parts[1],
+			Simogo:    parts[2],
+			Spoiler:   &spoiler,
+		})
+		if err != nil {
+			logger.Error("Failed to create senryu", "error", err)
+			metrics.RecordError("database")
+			return 0, false
+		}
+		return created.ID, true
+	}
+
+	covered := make(map[string]bool)
+	for _, ds := range doubleShots {
+		var createdIDs []int
+		if id, ok := saveSenryu(ds.First); ok {
+			createdIDs = append(createdIDs, id)
+		}
+		if id, ok := saveSenryu(ds.Second); ok {
+			createdIDs = append(createdIDs, id)
+		}
+		replyText := detect.FormatDetectionReply(ds.DisplayBody(), spoiler, true)
+		if !sendReply(replyText, createdIDs) {
+			return
+		}
+		covered[ds.First] = true
+		covered[ds.Second] = true
+	}
+
+	for _, match := range detect.FilterValidMatches(content, h) {
+		if covered[match] {
+			continue
+		}
+		parts := strings.Split(match, " ")
+		if len(parts) != 3 {
+			continue
+		}
+		var createdIDs []int
+		if id, ok := saveSenryu(match); ok {
+			createdIDs = append(createdIDs, id)
+		}
+		replyText := detect.FormatDetectionReply(match, spoiler, false)
+		if !sendReply(replyText, createdIDs) {
+			return
 		}
 	}
 }

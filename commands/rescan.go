@@ -94,8 +94,9 @@ func buildRescanEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, mess
 	content, spoiler := detect.PrepareContent(msg.Content)
 	findResult := detect.FindHaikuWithDebug(content, true)
 	valid := detect.FilterValidMatches(content, findResult.Matches)
+	doubleShots := detect.FindDoubleShots(content)
 
-	verdict, saved := rescanApply(s, i, msg, content, spoiler, valid)
+	verdict, saved := rescanApply(s, i, msg, content, spoiler, valid, doubleShots)
 	fmt.Fprintf(&b, "判定: %s\n", verdict)
 	if saved > 0 {
 		fmt.Fprintf(&b, "DB保存: %d件\n", saved)
@@ -115,7 +116,7 @@ func buildRescanEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, mess
 	return embed
 }
 
-func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *discordgo.Message, content string, spoiler bool, matches []string) (verdict string, saved int) {
+func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *discordgo.Message, content string, spoiler bool, matches []string, doubleShots []detect.DoubleShot) (verdict string, saved int) {
 	if msg.Author == nil {
 		return "スキップ（投稿者不明）", 0
 	}
@@ -154,12 +155,39 @@ func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *disc
 	if !detect.IsJapaneseRich(content) {
 		return "スキップ（日本語比率不足）", 0
 	}
-	if len(matches) == 0 {
+	if len(matches) == 0 && len(doubleShots) == 0 {
 		return "検出なし", 0
 	}
 
 	var lines []string
+	covered := make(map[string]bool)
+	for _, ds := range doubleShots {
+		lines = append(lines, detect.FormatDetectionReply(ds.DisplayBody(), false, true))
+		for _, match := range []string{ds.First, ds.Second} {
+			covered[match] = true
+			parts := strings.Split(match, " ")
+			if len(parts) != 3 || service.IsExcludedSenryu(match) {
+				continue
+			}
+			sp := spoiler
+			if _, err := service.CreateSenryu(model.Senryu{
+				ServerID:  i.GuildID,
+				AuthorID:  msg.Author.ID,
+				Kamigo:    parts[0],
+				Nakasichi: parts[1],
+				Simogo:    parts[2],
+				Spoiler:   &sp,
+			}); err != nil {
+				logger.Error("Rescan: failed to create senryu", "error", err, "match", match)
+				continue
+			}
+			saved++
+		}
+	}
 	for _, match := range matches {
+		if covered[match] {
+			continue
+		}
 		parts := strings.Split(match, " ")
 		if len(parts) != 3 {
 			continue
