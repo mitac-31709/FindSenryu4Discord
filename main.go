@@ -282,35 +282,13 @@ func main() {
 	}
 	userCommands = append(userCommands, commands.RescanCommand())
 
-	// Register user commands (global). Propagation can take up to ~1 hour.
-	logger.Info("Registering user slash commands (global)...")
+	// Register user commands (global)
+	logger.Info("Registering user slash commands...")
 	for _, cmd := range userCommands {
 		if _, err := dg.ApplicationCommandCreate(dg.State.User.ID, "", cmd); err != nil {
 			logger.Error("Failed to register command", "command", cmd.Name, "error", err)
 		} else {
-			logger.Info("Registered command", "command", cmd.Name, "scope", "global")
-		}
-	}
-
-	// Also register as guild commands so they appear immediately (no global delay).
-	// Re-run after guild cache completes and on newly joined guilds.
-	registerUserCommandsToGuilds := func(guildIDs []string) {
-		appID := dg.State.User.ID
-		for _, guildID := range guildIDs {
-			if guildID == "" {
-				continue
-			}
-			for _, cmd := range userCommands {
-				if _, err := dg.ApplicationCommandCreate(appID, guildID, cmd); err != nil {
-					logger.Error("Failed to register guild command",
-						"command", cmd.Name, "guild_id", guildID, "error", err)
-				} else {
-					logger.Info("Registered command",
-						"command", cmd.Name, "scope", "guild", "guild_id", guildID)
-				}
-			}
-			// Soft rate-limit across guilds
-			time.Sleep(300 * time.Millisecond)
+			logger.Info("Registered command", "command", cmd.Name)
 		}
 	}
 
@@ -325,36 +303,7 @@ func main() {
 				logger.Info("Registered admin command", "command", cmd.Name, "guild_id", adminGuildID)
 			}
 		}
-		// Admin guild gets user commands immediately as well
-		registerUserCommandsToGuilds([]string{adminGuildID})
 	}
-
-	// After guild cache is ready, register user commands on all guilds.
-	go func() {
-		for !botReady.Load() {
-			time.Sleep(time.Second)
-		}
-		var guildIDs []string
-		seen := map[string]bool{}
-		if adminGuildID != "" {
-			seen[adminGuildID] = true // already registered above
-		}
-		for _, s := range allSessions {
-			if s == nil {
-				continue
-			}
-			for _, g := range s.State.Guilds {
-				if g == nil || g.ID == "" || seen[g.ID] {
-					continue
-				}
-				seen[g.ID] = true
-				guildIDs = append(guildIDs, g.ID)
-			}
-		}
-		logger.Info("Registering user slash commands on guilds...", "guilds", len(guildIDs))
-		registerUserCommandsToGuilds(guildIDs)
-		logger.Info("Guild slash command registration finished", "guilds", len(guildIDs))
-	}()
 
 	// Update game status
 	dg.UpdateGameStatus(1, conf.Discord.Playing)
@@ -487,16 +436,6 @@ func guildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		adminNotifier.NotifyGuildJoin(g.Guild)
 	}
 	go commands.SendWelcomeMessage(s, g)
-	// Guild-scoped slash commands appear immediately (global ones can lag ~1h).
-	go func(guildID string) {
-		appID := s.State.User.ID
-		for _, cmd := range userCommands {
-			if _, err := s.ApplicationCommandCreate(appID, guildID, cmd); err != nil {
-				logger.Error("Failed to register guild command on join",
-					"command", cmd.Name, "guild_id", guildID, "error", err)
-			}
-		}
-	}(g.ID)
 }
 
 func guildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
