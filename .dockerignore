@@ -4,3 +4,7 @@
 !go.mod
 !go.sum
 !config.toml
+!third_party/
+!third_party/go-haiku/
+!third_party/go-haiku/go.mod
+!third_party/go-haiku/go.sum

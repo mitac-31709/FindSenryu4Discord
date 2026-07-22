@@ -4,6 +4,7 @@ FROM golang:1.26-trixie AS builder
 WORKDIR /build
 
 COPY go.mod go.sum ./
+COPY third_party/go-haiku ./third_party/go-haiku
 RUN go mod download
 
 COPY . .
