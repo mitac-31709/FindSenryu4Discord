@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	rescanEmbedColor   = 0x5865F2
+	rescanEmbedColor    = 0x5865F2
 	rescanDebugMaxRunes = 900
+	// RescanSavePrefix is the custom ID prefix for the rescan DB save button.
+	RescanSavePrefix = "rescan_save:"
 )
 
 // RescanCommand returns the /rescan slash command definition.
@@ -63,29 +65,104 @@ func HandleRescanCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	embed := buildRescanEmbed(s, i, messageID)
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	embed, components := buildRescanResult(s, i.GuildID, i.ChannelID, messageID, getUserID(i), false, 0)
+	edit := &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
-	}); err != nil {
+	}
+	if components != nil {
+		edit.Components = components
+	}
+	if _, err := s.InteractionResponseEdit(i.Interaction, edit); err != nil {
 		logger.Error("Failed to edit rescan response", "error", err)
 	}
 }
 
-func buildRescanEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, messageID string) *discordgo.MessageEmbed {
+// HandleRescanSave handles the "DBに保存" button on a /rescan result.
+func HandleRescanSave(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	payload := strings.TrimPrefix(i.MessageComponentData().CustomID, RescanSavePrefix)
+	parts := strings.Split(payload, ":")
+	if len(parts) != 5 {
+		respondEphemeral(s, i, "無効な操作です")
+		return
+	}
+	guildID, channelID, messageID, invokerID, spoilerFlag := parts[0], parts[1], parts[2], parts[3], parts[4]
+
+	if getUserID(i) != invokerID {
+		respondEphemeral(s, i, "このボタンは /rescan を実行したユーザーのみ押せます")
+		return
+	}
+	if i.GuildID != "" && i.GuildID != guildID {
+		respondEphemeral(s, i, "無効な操作です")
+		return
+	}
+
+	spoiler := spoilerFlag == "1"
+
+	msg, err := s.ChannelMessage(channelID, messageID)
+	if err != nil {
+		respondEphemeral(s, i, fmt.Sprintf("メッセージの取得に失敗しました: %v", err))
+		return
+	}
+
+	content, _ := detect.PrepareContent(msg.Content)
+	findResult := detect.FindHaikuWithDebug(content, false)
+	valid := detect.FilterValidMatches(content, findResult.Matches)
+	doubleShots := detect.FindDoubleShots(content)
+
+	if msg.Author == nil {
+		respondEphemeral(s, i, "投稿者が不明なため保存できません")
+		return
+	}
+
+	candidates := collectSavableMatches(valid, doubleShots)
+	saved := 0
+	for _, match := range candidates {
+		parts := strings.Split(match, " ")
+		if len(parts) != 3 {
+			continue
+		}
+		sp := spoiler
+		if _, err := service.CreateSenryu(model.Senryu{
+			ServerID:  guildID,
+			AuthorID:  msg.Author.ID,
+			Kamigo:    parts[0],
+			Nakasichi: parts[1],
+			Simogo:    parts[2],
+			Spoiler:   &sp,
+		}); err != nil {
+			logger.Error("Rescan save: failed to create senryu", "error", err, "match", match)
+			continue
+		}
+		saved++
+	}
+
+	embed, _ := buildRescanResult(s, guildID, channelID, messageID, invokerID, true, saved)
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Embeds:     []*discordgo.MessageEmbed{embed},
+			Components: []discordgo.MessageComponent{},
+		},
+	}); err != nil {
+		logger.Error("Failed to update rescan after save", "error", err)
+	}
+}
+
+func buildRescanResult(s *discordgo.Session, guildID, channelID, messageID, invokerID string, afterSave bool, savedCount int) (*discordgo.MessageEmbed, *[]discordgo.MessageComponent) {
 	embed := &discordgo.MessageEmbed{
 		Title:     "再スキャン結果",
 		Color:     rescanEmbedColor,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
-	msg, err := s.ChannelMessage(i.ChannelID, messageID)
+	msg, err := s.ChannelMessage(channelID, messageID)
 	if err != nil {
 		embed.Description = fmt.Sprintf("メッセージの取得に失敗しました。\nmessage_id: `%s`\nerror: %v", messageID, err)
-		return embed
+		return embed, nil
 	}
 
 	authorLabel := formatAuthorPlain(msg.Author)
-	msgLink := fmt.Sprintf("https://discord.com/channels/%s/%s/%s", i.GuildID, i.ChannelID, messageID)
+	msgLink := fmt.Sprintf("https://discord.com/channels/%s/%s/%s", guildID, channelID, messageID)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "対象: [メッセージ](%s)\n", msgLink)
@@ -96,16 +173,23 @@ func buildRescanEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, mess
 	valid := detect.FilterValidMatches(content, findResult.Matches)
 	doubleShots := detect.FindDoubleShots(content)
 
-	verdict, saved := rescanApply(s, i, msg, content, spoiler, valid, doubleShots)
+	verdict, saveCandidates := rescanApply(s, guildID, channelID, msg, content, valid, doubleShots)
 	fmt.Fprintf(&b, "判定: %s\n", verdict)
-	if saved > 0 {
-		fmt.Fprintf(&b, "DB保存: %d件\n", saved)
+	if afterSave {
+		fmt.Fprintf(&b, "DB保存: %d件\n", savedCount)
+	} else if saveCandidates > 0 {
+		fmt.Fprintf(&b, "保存候補: %d件\n", saveCandidates)
 	}
 	embed.Description = b.String()
 
 	debugLog := strings.TrimSpace(findResult.DebugLog)
 	if debugLog == "" {
 		debugLog = "(デバッグ出力なし)"
+	} else {
+		formatted := detect.FormatHaikuDebugLog(debugLog)
+		if formatted != "" {
+			debugLog = formatted
+		}
 	}
 	embed.Fields = []*discordgo.MessageEmbedField{
 		{
@@ -113,10 +197,31 @@ func buildRescanEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, mess
 			Value: "```\n" + truncateRunes(debugLog, rescanDebugMaxRunes) + "\n```",
 		},
 	}
-	return embed
+
+	var components *[]discordgo.MessageComponent
+	if !afterSave && saveCandidates > 0 {
+		spoilerFlag := "0"
+		if spoiler {
+			spoilerFlag = "1"
+		}
+		customID := fmt.Sprintf("%s%s:%s:%s:%s:%s", RescanSavePrefix, guildID, channelID, messageID, invokerID, spoilerFlag)
+		components = &[]discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "DBに保存",
+						Style:    discordgo.PrimaryButton,
+						CustomID: customID,
+					},
+				},
+			},
+		}
+	}
+	return embed, components
 }
 
-func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *discordgo.Message, content string, spoiler bool, matches []string, doubleShots []detect.DoubleShot) (verdict string, saved int) {
+// rescanApply returns the verdict text and the number of savable matches (not yet saved).
+func rescanApply(s *discordgo.Session, guildID, channelID string, msg *discordgo.Message, content string, matches []string, doubleShots []detect.DoubleShot) (verdict string, saveCandidates int) {
 	if msg.Author == nil {
 		return "スキップ（投稿者不明）", 0
 	}
@@ -124,9 +229,9 @@ func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *disc
 		return "スキップ（Botのメッセージ）", 0
 	}
 
-	ch, err := s.State.Channel(i.ChannelID)
+	ch, err := s.State.Channel(channelID)
 	if err != nil {
-		ch, err = s.Channel(i.ChannelID)
+		ch, err = s.Channel(channelID)
 		if err != nil {
 			return fmt.Sprintf("スキップ（チャンネル取得失敗: %v）", err), 0
 		}
@@ -137,16 +242,16 @@ func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *disc
 		return "スキップ（DM）", 0
 	}
 
-	if !service.IsChannelTypeEnabled(i.GuildID, ch.Type) {
+	if !service.IsChannelTypeEnabled(guildID, ch.Type) {
 		return "スキップ（このチャンネルタイプでは検出無効）", 0
 	}
-	if i.GuildID == permissions.GetAdminGuildID() {
+	if guildID == permissions.GetAdminGuildID() {
 		return "スキップ（管理ギルド）", 0
 	}
-	if service.IsMute(i.ChannelID) || (ch.ParentID != "" && service.IsMute(ch.ParentID)) {
+	if service.IsMute(channelID) || (ch.ParentID != "" && service.IsMute(ch.ParentID)) {
 		return "スキップ（ミュート中）", 0
 	}
-	if service.IsDetectionOptedOut(i.GuildID, msg.Author.ID) {
+	if service.IsDetectionOptedOut(guildID, msg.Author.ID) {
 		return "スキップ（検出オプトアウト）", 0
 	}
 	if detect.ContainsDiscordTokens(msg.Content) {
@@ -165,23 +270,6 @@ func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *disc
 		lines = append(lines, detect.FormatDetectionReply(ds.DisplayBody(), false, true))
 		for _, match := range []string{ds.First, ds.Second} {
 			covered[match] = true
-			parts := strings.Split(match, " ")
-			if len(parts) != 3 || service.IsExcludedSenryu(match) {
-				continue
-			}
-			sp := spoiler
-			if _, err := service.CreateSenryu(model.Senryu{
-				ServerID:  i.GuildID,
-				AuthorID:  msg.Author.ID,
-				Kamigo:    parts[0],
-				Nakasichi: parts[1],
-				Simogo:    parts[2],
-				Spoiler:   &sp,
-			}); err != nil {
-				logger.Error("Rescan: failed to create senryu", "error", err, "match", match)
-				continue
-			}
-			saved++
 		}
 	}
 	for _, match := range matches {
@@ -193,24 +281,31 @@ func rescanApply(s *discordgo.Session, i *discordgo.InteractionCreate, msg *disc
 			continue
 		}
 		lines = append(lines, "「"+match+"」")
-		if service.IsExcludedSenryu(match) {
-			continue
-		}
-		sp := spoiler
-		if _, err := service.CreateSenryu(model.Senryu{
-			ServerID:  i.GuildID,
-			AuthorID:  msg.Author.ID,
-			Kamigo:    parts[0],
-			Nakasichi: parts[1],
-			Simogo:    parts[2],
-			Spoiler:   &sp,
-		}); err != nil {
-			logger.Error("Rescan: failed to create senryu", "error", err, "match", match)
-			continue
-		}
-		saved++
 	}
-	return "検出あり\n" + strings.Join(lines, "\n"), saved
+
+	saveCandidates = len(collectSavableMatches(matches, doubleShots))
+	return "検出あり\n" + strings.Join(lines, "\n"), saveCandidates
+}
+
+func collectSavableMatches(matches []string, doubleShots []detect.DoubleShot) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(match string) {
+		parts := strings.Split(match, " ")
+		if len(parts) != 3 || service.IsExcludedSenryu(match) || seen[match] {
+			return
+		}
+		seen[match] = true
+		out = append(out, match)
+	}
+	for _, ds := range doubleShots {
+		add(ds.First)
+		add(ds.Second)
+	}
+	for _, match := range matches {
+		add(match)
+	}
+	return out
 }
 
 func formatAuthorPlain(u *discordgo.User) string {

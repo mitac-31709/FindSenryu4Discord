@@ -2,6 +2,7 @@ package detect_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/0x307e/go-haiku"
@@ -252,5 +253,30 @@ func TestFindHaikuWithDebug_ログあり(t *testing.T) {
 	}
 	if len(r.Matches) == 0 {
 		t.Fatalf("expected matches, debug=%s", r.DebugLog)
+	}
+}
+
+func TestFormatHaikuDebugLog(t *testing.T) {
+	raw := "" +
+		"surface=お reading=オ mora=1 phrase=0 remaining=[5 7 5] features=[接頭辞 * *]\n" +
+		"surface=ちんちん reading=チンチン mora=4 phrase=0 remaining=[4 7 5] features=[名詞 普通名詞]\n" +
+		"not a debug line\n" +
+		"surface=嗚呼 reading=アー mora=2 phrase=1 remaining=[0 7 5] features=[感動詞 一般]\n"
+	got := detect.FormatHaikuDebugLog(raw)
+	want := strings.Join([]string{
+		"表層 / 読み (モーラ)  句  残り",
+		"お / オ (1)  0  [5 7 5]",
+		"ちんちん / チンチン (4)  0  [4 7 5]",
+		"not a debug line",
+		"嗚呼 / アー (2)  1  [0 7 5]",
+	}, "\n")
+	if got != want {
+		t.Fatalf("FormatHaikuDebugLog:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestFormatHaikuDebugLog_空(t *testing.T) {
+	if got := detect.FormatHaikuDebugLog("  \n  "); got != "" {
+		t.Fatalf("expected empty, got %q", got)
 	}
 }

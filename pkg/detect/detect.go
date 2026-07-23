@@ -2,6 +2,7 @@ package detect
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
@@ -29,6 +30,10 @@ var (
 	reFencedCodeBlock = regexp.MustCompile("(?s)```.*?```")
 	reInlineCode      = regexp.MustCompile("`[^`]+`")
 	reSpoiler         = regexp.MustCompile(`\|\|.+?\|\|`)
+	// surface=… reading=… mora=N phrase=N remaining=[…] features=[…]
+	reHaikuDebugLine = regexp.MustCompile(
+		`^surface=(.*) reading=(.*) mora=(\d+) phrase=(\d+) remaining=(\[[^\]]*\]) features=.*$`,
+	)
 )
 
 // ContainsDiscordTokens reports whether s contains Discord-specific tokens
@@ -149,4 +154,36 @@ func FilterValidMatches(content string, matches []string) []string {
 		out = append(out, match)
 	}
 	return out
+}
+
+// FormatHaikuDebugLog reformats go-haiku debug lines for readable Discord display.
+// Parses surface/reading/mora/phrase/remaining and drops features. Unparsed lines
+// are kept as-is. Empty input returns an empty string.
+func FormatHaikuDebugLog(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	lines := strings.Split(raw, "\n")
+	var out []string
+	header := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		m := reHaikuDebugLine.FindStringSubmatch(line)
+		if m == nil {
+			out = append(out, line)
+			continue
+		}
+		if !header {
+			out = append(out, "表層 / 読み (モーラ)  句  残り")
+			header = true
+		}
+		surface, reading, mora, phrase, remaining := m[1], m[2], m[3], m[4], m[5]
+		out = append(out, fmt.Sprintf("%s / %s (%s)  %s  %s", surface, reading, mora, phrase, remaining))
+	}
+	return strings.Join(out, "\n")
 }

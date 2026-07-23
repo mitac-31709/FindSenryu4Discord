@@ -271,39 +271,12 @@ func main() {
 
 	// Use shard 0 as the primary session for command registration
 	dg := allSessions[0]
-
-	// Conditionally add /contact command
-	if conf.Admin.ContactChannelID != "" {
-		userCommands = append(userCommands, &discordgo.ApplicationCommand{
-			Name:                     "contact",
-			Description:              "Bot管理者にお問い合わせを送信します",
-			DefaultMemberPermissions: &adminPermission,
-		})
-	}
-	userCommands = append(userCommands, commands.RescanCommand())
-
-	// Register user commands (global)
-	logger.Info("Registering user slash commands...")
-	for _, cmd := range userCommands {
-		if _, err := dg.ApplicationCommandCreate(dg.State.User.ID, "", cmd); err != nil {
-			logger.Error("Failed to register command", "command", cmd.Name, "error", err)
-		} else {
-			logger.Info("Registered command", "command", cmd.Name)
-		}
-	}
-
-	// Register admin commands (guild-specific)
 	adminGuildID := permissions.GetAdminGuildID()
-	if adminGuildID != "" {
-		logger.Info("Registering admin slash commands...", "guild_id", adminGuildID)
-		for _, cmd := range commands.AdminCommands() {
-			if _, err := dg.ApplicationCommandCreate(dg.State.User.ID, adminGuildID, cmd); err != nil {
-				logger.Error("Failed to register admin command", "command", cmd.Name, "error", err)
-			} else {
-				logger.Info("Registered admin command", "command", cmd.Name, "guild_id", adminGuildID)
-			}
-		}
-	}
+	registerSlashCommands(dg, conf.Admin.ContactChannelID != "", adminGuildID)
+
+	// Clear stale guild-scoped copies of user commands (registered historically for
+	// instant availability). Those stack with global commands and appear as duplicates.
+	go clearStaleGuildUserCommands(dg, adminGuildID)
 
 	// Update game status
 	dg.UpdateGameStatus(1, conf.Discord.Playing)
@@ -364,8 +337,8 @@ func main() {
 	}
 
 	// Slash commands are intentionally NOT removed on shutdown.
-	// ApplicationCommandCreate (called on startup) is an upsert, so commands
-	// persist across restarts without the up-to-1-hour global propagation delay.
+	// ApplicationCommandBulkOverwrite (called on startup) keeps the desired set
+	// without the up-to-1-hour global propagation delay of delete-and-recreate.
 
 	// Close all Discord shard connections
 	for _, s := range allSessions {
@@ -436,6 +409,101 @@ func guildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 		adminNotifier.NotifyGuildJoin(g.Guild)
 	}
 	go commands.SendWelcomeMessage(s, g)
+	// Ensure this guild has no leftover guild-scoped user commands (duplicates of global).
+	go syncGuildSlashCommands(s, g.ID, permissions.GetAdminGuildID())
+}
+
+// buildUserCommands returns the global user slash command set for this process.
+func buildUserCommands(includeContact bool) []*discordgo.ApplicationCommand {
+	cmds := make([]*discordgo.ApplicationCommand, len(userCommands), len(userCommands)+2)
+	copy(cmds, userCommands)
+	if includeContact {
+		cmds = append(cmds, &discordgo.ApplicationCommand{
+			Name:                     "contact",
+			Description:              "Bot管理者にお問い合わせを送信します",
+			DefaultMemberPermissions: &adminPermission,
+		})
+	}
+	cmds = append(cmds, commands.RescanCommand())
+	return cmds
+}
+
+// registerSlashCommands overwrites global user commands and admin-guild commands.
+func registerSlashCommands(s *discordgo.Session, includeContact bool, adminGuildID string) {
+	appID := s.State.User.ID
+	userCmds := buildUserCommands(includeContact)
+
+	logger.Info("Registering user slash commands (global overwrite)...", "count", len(userCmds))
+	if _, err := s.ApplicationCommandBulkOverwrite(appID, "", userCmds); err != nil {
+		logger.Error("Failed to register global commands", "error", err)
+	} else {
+		for _, cmd := range userCmds {
+			logger.Info("Registered command", "command", cmd.Name, "scope", "global")
+		}
+	}
+
+	if adminGuildID == "" {
+		return
+	}
+	adminCmds := commands.AdminCommands()
+	logger.Info("Registering admin slash commands (guild overwrite)...", "guild_id", adminGuildID, "count", len(adminCmds))
+	if _, err := s.ApplicationCommandBulkOverwrite(appID, adminGuildID, adminCmds); err != nil {
+		logger.Error("Failed to register admin commands", "guild_id", adminGuildID, "error", err)
+	} else {
+		for _, cmd := range adminCmds {
+			logger.Info("Registered admin command", "command", cmd.Name, "guild_id", adminGuildID)
+		}
+	}
+}
+
+// clearStaleGuildUserCommands waits for guild cache, then removes guild-scoped
+// user commands that would duplicate the global set.
+func clearStaleGuildUserCommands(s *discordgo.Session, adminGuildID string) {
+	for connectedShards.Load() < expectedShards.Load() {
+		time.Sleep(time.Second)
+	}
+	// Match guildCreate debounce (~5s) so State.Guilds is populated.
+	time.Sleep(6 * time.Second)
+
+	seen := make(map[string]bool)
+	var guildIDs []string
+	for _, sess := range allSessions {
+		if sess == nil {
+			continue
+		}
+		for _, g := range sess.State.Guilds {
+			if g == nil || g.ID == "" || seen[g.ID] {
+				continue
+			}
+			seen[g.ID] = true
+			guildIDs = append(guildIDs, g.ID)
+		}
+	}
+
+	logger.Info("Clearing stale guild-scoped user commands...", "guilds", len(guildIDs))
+	for _, guildID := range guildIDs {
+		syncGuildSlashCommands(s, guildID, adminGuildID)
+		time.Sleep(300 * time.Millisecond)
+	}
+	logger.Info("Stale guild command cleanup finished", "guilds", len(guildIDs))
+}
+
+// syncGuildSlashCommands sets guild commands to admin-only on the admin guild,
+// or clears all guild commands elsewhere (user commands stay global-only).
+func syncGuildSlashCommands(s *discordgo.Session, guildID, adminGuildID string) {
+	if s == nil || guildID == "" {
+		return
+	}
+	appID := s.State.User.ID
+	cmds := []*discordgo.ApplicationCommand{}
+	if adminGuildID != "" && guildID == adminGuildID {
+		cmds = commands.AdminCommands()
+	}
+	if _, err := s.ApplicationCommandBulkOverwrite(appID, guildID, cmds); err != nil {
+		logger.Error("Failed to sync guild slash commands", "guild_id", guildID, "error", err)
+		return
+	}
+	logger.Info("Synced guild slash commands", "guild_id", guildID, "count", len(cmds))
 }
 
 func guildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
@@ -512,6 +580,8 @@ func handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		commands.HandleContactReplyButton(s, i)
 	case strings.HasPrefix(customID, commands.ChannelTogglePrefix):
 		commands.HandleChannelToggle(s, i)
+	case strings.HasPrefix(customID, commands.RescanSavePrefix):
+		commands.HandleRescanSave(s, i)
 	}
 }
 
