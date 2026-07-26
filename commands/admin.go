@@ -67,7 +67,7 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 				},
 				{
 					Name:        "import",
-					Description: "チャンネル履歴から過去の川柳検出をDBへ取り込みます",
+					Description: "検索で過去の川柳検出返信を見つけDBへ取り込みます",
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Options: []*discordgo.ApplicationCommandOption{
 						{
@@ -84,11 +84,11 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 						},
 						{
 							Name:        "limit",
-							Description: "走査するメッセージ上限（デフォルト5000、最大50000）",
+							Description: "検索ヒットの処理上限（デフォルト1000、最大10000）",
 							Type:        discordgo.ApplicationCommandOptionInteger,
 							Required:    false,
 							MinValue:    floatPtr(1),
-							MaxValue:    50000,
+							MaxValue:    10000,
 						},
 					},
 				},
@@ -191,7 +191,7 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		return
 	}
 
-	// Defer: history scan can exceed the 3s interaction timeout
+	// Defer: search + import can exceed the 3s interaction timeout
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{

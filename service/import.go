@@ -12,12 +12,10 @@ import (
 )
 
 const (
-	detectionPrefix     = "川柳を検出しました！"
-	defaultImportLimit  = 5000
-	maxImportLimit      = 50000
-	channelHistoryPage  = 100
-	importPageDelay     = 350 * time.Millisecond
-	importMessageDelay  = 50 * time.Millisecond
+	detectionPrefix    = "川柳を検出しました！"
+	defaultImportLimit = 1000
+	maxImportLimit     = 10000
+	importMessageDelay = 50 * time.Millisecond
 )
 
 // Matches:
@@ -81,7 +79,7 @@ type ImportOptions struct {
 	ChannelID    string
 	SourceBotIDs []string
 	DryRun       bool
-	Limit        int // max messages to scan (0 = default)
+	Limit        int // max search hits to process (0 = default)
 }
 
 func resolveImportLimit(limit int) int {
@@ -103,7 +101,8 @@ func isSourceBot(authorID string, sourceBotIDs []string) bool {
 	return false
 }
 
-// ImportChannelHistory scans a channel for past detection replies and imports them.
+// ImportChannelHistory searches a channel for past detection replies and imports them.
+// Uses Discord's Search Guild Messages API instead of paging the entire channel history.
 // sourceBotIDs must contain at least one bot user ID (caller should include self when config is empty).
 func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResult, error) {
 	var result ImportResult
@@ -130,25 +129,28 @@ func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResul
 		}
 	}
 
-	var beforeID string
-	for result.Scanned < limit {
-		remaining := limit - result.Scanned
-		pageSize := channelHistoryPage
-		if remaining < pageSize {
+	offset := 0
+	for result.Scanned < limit && offset <= maxSearchOffset {
+		pageSize := searchPageSize
+		if remaining := limit - result.Scanned; remaining < pageSize {
 			pageSize = remaining
 		}
 
-		messages, err := s.ChannelMessages(opts.ChannelID, pageSize, beforeID, "", "")
+		q := buildDetectionSearchQuery(opts.ChannelID, opts.SourceBotIDs, offset, pageSize)
+		searchResult, err := searchGuildMessages(s, guildID, q)
 		if err != nil {
-			return result, errors.Wrap(err, "failed to fetch channel messages")
+			return result, err
 		}
-		if len(messages) == 0 {
+		if len(searchResult.Messages) == 0 {
 			break
 		}
 
-		for _, msg := range messages {
+		for _, group := range searchResult.Messages {
+			msg := pickSearchHit(group)
+			if msg == nil {
+				continue
+			}
 			result.Scanned++
-			beforeID = msg.ID
 
 			if msg.Author == nil || !isSourceBot(msg.Author.ID, opts.SourceBotIDs) {
 				continue
@@ -177,7 +179,11 @@ func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResul
 				continue
 			}
 
-			parent, err := s.ChannelMessage(opts.ChannelID, msg.MessageReference.MessageID)
+			parentChannelID := opts.ChannelID
+			if msg.ChannelID != "" {
+				parentChannelID = msg.ChannelID
+			}
+			parent, err := s.ChannelMessage(parentChannelID, msg.MessageReference.MessageID)
 			if err != nil {
 				result.SkippedNoParent++
 				logger.Debug("Import: parent message unavailable",
@@ -224,10 +230,11 @@ func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResul
 			time.Sleep(importMessageDelay)
 		}
 
-		if len(messages) < pageSize {
+		offset += pageSize
+		if searchResult.TotalResults > 0 && offset >= searchResult.TotalResults {
 			break
 		}
-		time.Sleep(importPageDelay)
+		time.Sleep(searchPageDelay)
 	}
 
 	logger.Info("Channel history import finished",

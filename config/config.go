@@ -78,7 +78,7 @@ type EncryptionConfig struct {
 	Key string `koanf:"key"` // Hex-encoded 32-byte AES-256 key (empty = disabled)
 }
 
-// ImportConfig holds settings for channel history import.
+// ImportConfig holds settings for importing past detection replies via message search.
 type ImportConfig struct {
 	// SourceBotIDs are Discord user IDs whose detection replies should be imported.
 	// Empty means only the running bot's own messages are matched.

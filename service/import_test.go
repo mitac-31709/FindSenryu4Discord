@@ -1,8 +1,10 @@
 package service
 
 import (
+	"net/http"
 	"testing"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/crypto"
 )
@@ -104,6 +106,72 @@ func TestIsSourceBot(t *testing.T) {
 	}
 	if isSourceBot("111", nil) {
 		t.Error("empty list should not match")
+	}
+}
+
+func TestBuildDetectionSearchQuery(t *testing.T) {
+	q := buildDetectionSearchQuery("ch1", []string{"bot1", "", "bot2"}, 25, 10)
+	if q.Get("content") != detectionPrefix {
+		t.Errorf("content=%q, want %q", q.Get("content"), detectionPrefix)
+	}
+	if got := q["channel_id"]; len(got) != 1 || got[0] != "ch1" {
+		t.Errorf("channel_id=%v", got)
+	}
+	if got := q["author_id"]; len(got) != 2 || got[0] != "bot1" || got[1] != "bot2" {
+		t.Errorf("author_id=%v", got)
+	}
+	if q.Get("offset") != "25" {
+		t.Errorf("offset=%q, want 25", q.Get("offset"))
+	}
+	if q.Get("limit") != "10" {
+		t.Errorf("limit=%q, want 10", q.Get("limit"))
+	}
+	if q.Get("include_nsfw") != "true" {
+		t.Errorf("include_nsfw=%q, want true", q.Get("include_nsfw"))
+	}
+}
+
+func TestPickSearchHit(t *testing.T) {
+	detection := &discordgo.Message{
+		ID:      "1",
+		Content: "川柳を検出しました！\n「あ い う」",
+	}
+	other := &discordgo.Message{
+		ID:      "2",
+		Content: " unrelated ",
+	}
+
+	if got := pickSearchHit([]*discordgo.Message{other, detection}); got != detection {
+		t.Fatalf("prefer detection reply, got %#v", got)
+	}
+	if got := pickSearchHit([]*discordgo.Message{nil, other}); got != other {
+		t.Fatalf("fallback to first non-nil, got %#v", got)
+	}
+	if got := pickSearchHit([]*discordgo.Message{nil}); got != nil {
+		t.Fatalf("empty group should be nil, got %#v", got)
+	}
+}
+
+func TestSearchIndexRetryAfter(t *testing.T) {
+	body := []byte(`{"message":"Index not yet available. Try again later","code":110000,"retry_after":1.5}`)
+	err := &discordgo.RESTError{
+		Response:     &http.Response{StatusCode: http.StatusAccepted},
+		ResponseBody: body,
+	}
+	retry, ok := searchIndexRetryAfter(err)
+	if !ok {
+		t.Fatal("expected retryable index pending")
+	}
+	if retry != 1.5 {
+		t.Fatalf("retry_after=%v, want 1.5", retry)
+	}
+
+	err = &discordgo.RESTError{
+		Response:     &http.Response{StatusCode: http.StatusForbidden},
+		ResponseBody: []byte(`{"message":"Missing Access","code":50001}`),
+	}
+	if _, ok := searchIndexRetryAfter(err); ok {
+		t.Fatal("non-202 should not be retryable")
 	}
 }
 
