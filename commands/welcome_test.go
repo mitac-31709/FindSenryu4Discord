@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildWelcomeEmbed_フィールド構成(t *testing.T) {
-	embed := buildWelcomeEmbed()
+	embed := buildWelcomeEmbed("☝️")
 
 	if embed.Title == "" {
 		t.Error("embed title should not be empty")
@@ -34,7 +34,7 @@ func TestBuildWelcomeEmbed_フィールド構成(t *testing.T) {
 }
 
 func TestBuildWelcomeEmbed_コマンド一覧を含む(t *testing.T) {
-	embed := buildWelcomeEmbed()
+	embed := buildWelcomeEmbed("☝️")
 
 	commandsField := embed.Fields[2]
 	commands := []string{"/mute", "/unmute", "/rank", "/detect off", "/channel", "/doctor"}

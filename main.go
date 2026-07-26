@@ -232,6 +232,7 @@ func main() {
 	// Gateway Intents
 	intents := discordgo.IntentGuilds |
 		discordgo.IntentGuildMessages |
+		discordgo.IntentGuildMessageReactions |
 		discordgo.IntentMessageContent
 
 	// Create and open sessions for each shard
@@ -248,6 +249,7 @@ func main() {
 		s.Identify.Intents = intents
 
 		s.AddHandler(messageCreate)
+		s.AddHandler(messageReactionAdd)
 		s.AddHandler(interactionCreate)
 		s.AddHandler(guildCreate)
 		s.AddHandler(guildDelete)
@@ -928,6 +930,131 @@ func parseYomeCount(content string, max int) (count int, ok bool, outOfRange boo
 		return n, true, true
 	}
 	return n, true, false
+}
+
+// parseYomeMessage parses a bot 「詠め」 reply.
+// ok is true only when the message is still a 3-phrase senryu (not yet tanka).
+func parseYomeMessage(content string) (phrases []string, writers string, ok bool) {
+	const prefix = "ここで一句\n"
+	if !strings.HasPrefix(content, prefix) {
+		return nil, "", false
+	}
+	rest := strings.TrimPrefix(content, prefix)
+	lines := strings.SplitN(rest, "\n", 2)
+	phraseLine := lines[0]
+	if !strings.HasPrefix(phraseLine, "「") || !strings.HasSuffix(phraseLine, "」") {
+		return nil, "", false
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(phraseLine, "「"), "」")
+	phrases = strings.Split(inner, " ")
+	if len(phrases) != 3 {
+		return nil, "", false
+	}
+	for _, p := range phrases {
+		if p == "" {
+			return nil, "", false
+		}
+	}
+	if len(lines) >= 2 && strings.HasPrefix(lines[1], "詠み手: ") {
+		writers = strings.TrimPrefix(lines[1], "詠み手: ")
+	}
+	return phrases, writers, true
+}
+
+// buildTankaMessage builds the edited message content for a tanka (5 phrases).
+func buildTankaMessage(phrases []string, writers string) string {
+	return fmt.Sprintf("ここで一首\n「%s」\n詠み手: %s", strings.Join(phrases, " "), writers)
+}
+
+// stripEmojiModifiers removes VS16/VS15 and skin-tone modifiers from an emoji string.
+func stripEmojiModifiers(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\uFE0F' || r == '\uFE0E':
+			continue
+		case r >= 0x1F3FB && r <= 0x1F3FF:
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// isTankaReaction reports whether emojiName matches the configured tanka reaction.
+// Unicode skin-tone / variation-selector variants are accepted; custom emoji names require an exact match.
+func isTankaReaction(emojiName, configured string) bool {
+	if configured == "" || emojiName == "" {
+		return false
+	}
+	if emojiName == configured {
+		return true
+	}
+	baseConfigured := stripEmojiModifiers(configured)
+	baseEmoji := stripEmojiModifiers(emojiName)
+	if baseConfigured == "" {
+		return false
+	}
+	// Custom emoji names are alphanumeric; only exact match (already handled) applies.
+	// For unicode, compare stripped bases and allow configured prefix (skin tones).
+	if baseEmoji == baseConfigured {
+		return true
+	}
+	return strings.HasPrefix(emojiName, configured) || strings.HasPrefix(emojiName, baseConfigured)
+}
+
+func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+	if r.UserID == s.State.User.ID {
+		return
+	}
+	if r.GuildID == "" || r.GuildID == permissions.GetAdminGuildID() {
+		return
+	}
+	configured := config.GetConf().Discord.TankaReaction
+	if !isTankaReaction(r.Emoji.Name, configured) {
+		return
+	}
+
+	msg, err := s.ChannelMessage(r.ChannelID, r.MessageID)
+	if err != nil {
+		logger.Warn("Failed to fetch message for tanka reaction",
+			"error", err, "channel_id", r.ChannelID, "message_id", r.MessageID)
+		return
+	}
+	if msg.Author == nil || msg.Author.ID != s.State.User.ID {
+		return
+	}
+
+	phrases, writers, ok := parseYomeMessage(msg.Content)
+	if !ok {
+		return
+	}
+
+	extra, err := service.GetTwoRandomNakasichi(r.GuildID)
+	if err != nil {
+		logger.Error("Failed to get random nakasichi for tanka", "error", err, "guild_id", r.GuildID)
+		s.MessageReactionAdd(r.ChannelID, r.MessageID, "❌")
+		return
+	}
+	if len(extra) < 2 {
+		logger.Debug("Not enough senryus for tanka extension", "guild_id", r.GuildID, "count", len(extra))
+		s.MessageReactionAdd(r.ChannelID, r.MessageID, "❌")
+		return
+	}
+
+	phrases = append(phrases, extra[0].Nakasichi, extra[1].Nakasichi)
+	var existing []string
+	if writers != "" {
+		existing = strings.Split(writers, ", ")
+	}
+	mergedWriters := sliceUnique(append(existing, getWriters(extra, r.GuildID, s)...))
+
+	newContent := buildTankaMessage(phrases, strings.Join(mergedWriters, ", "))
+	if _, err := s.ChannelMessageEdit(r.ChannelID, r.MessageID, newContent); err != nil {
+		logger.Warn("Failed to edit message into tanka",
+			"error", err, "channel_id", r.ChannelID, "message_id", r.MessageID)
+	}
 }
 
 // resolveDisplayName returns the best display name for a guild member,

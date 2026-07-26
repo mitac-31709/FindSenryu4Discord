@@ -35,7 +35,8 @@ type DiscordConfig struct {
 	Token          string `koanf:"token"`
 	Playing        string `koanf:"playing"`
 	WelcomeEnabled *bool  `koanf:"welcome_enabled"`
-	YomeMax        int    `koanf:"yome_max"` // max for "n回詠め" (default 10)
+	YomeMax        int    `koanf:"yome_max"`        // max for "n回詠め" (default 10)
+	TankaReaction  string `koanf:"tanka_reaction"` // reaction to extend 「詠め」 into tanka (default ☝️)
 }
 
 // DatabaseConfig holds database configuration
@@ -134,6 +135,9 @@ func setDefaults(c *Config) {
 	}
 	if c.Discord.YomeMax <= 0 {
 		c.Discord.YomeMax = 10
+	}
+	if c.Discord.TankaReaction == "" {
+		c.Discord.TankaReaction = "☝️"
 	}
 	if c.Database.Driver == "" {
 		c.Database.Driver = "sqlite3"

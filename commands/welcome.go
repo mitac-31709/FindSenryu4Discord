@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -33,7 +34,7 @@ func ClearGuildWelcomeSent(guildID string) {
 	welcomeSentGuilds.Delete(guildID)
 }
 
-func buildWelcomeEmbed() *discordgo.MessageEmbed {
+func buildWelcomeEmbed(tankaReaction string) *discordgo.MessageEmbed {
 	return &discordgo.MessageEmbed{
 		Title:       "川柳検出Bot へようこそ！",
 		Description: "このBotはメッセージから川柳（五・七・五）を自動検出してお知らせします。",
@@ -45,7 +46,7 @@ func buildWelcomeEmbed() *discordgo.MessageEmbed {
 			},
 			{
 				Name:  "「詠め」「詠むな」",
-				Value: "「詠め」と発言するとサーバー内の川柳からランダムに一句詠みます。「3回詠め」のように回数を指定すると連続で詠めます。「詠むな」で直前の句を表示します。",
+				Value: fmt.Sprintf("「詠め」と発言するとサーバー内の川柳からランダムに一句詠みます。「3回詠め」のように回数を指定すると連続で詠めます。一句に %s リアクションを付けると短歌（五・七・五・七・七）に伸ばせます。「詠むな」で直前の句を表示します。", tankaReaction),
 			},
 			{
 				Name:  "便利なコマンド",
@@ -116,7 +117,7 @@ func SendWelcomeMessage(s *discordgo.Session, g *discordgo.GuildCreate) {
 		return
 	}
 
-	embed := buildWelcomeEmbed()
+	embed := buildWelcomeEmbed(conf.Discord.TankaReaction)
 	if _, err := s.ChannelMessageSendEmbed(channelID, embed); err != nil {
 		logger.Warn("Failed to send welcome message", "error", err, "guild_id", g.ID, "channel_id", channelID)
 		// Keep the mark for permanent errors (403/404) to avoid retry storms.

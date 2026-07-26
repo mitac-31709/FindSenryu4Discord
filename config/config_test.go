@@ -22,3 +22,24 @@ func TestSetDefaults_YomeMax(t *testing.T) {
 		})
 	}
 }
+
+func TestSetDefaults_TankaReaction(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "未設定", in: "", want: "☝️"},
+		{name: "明示値", in: "👆", want: "👆"},
+		{name: "カスタム名", in: "tanka", want: "tanka"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{Discord: DiscordConfig{TankaReaction: tt.in}}
+			setDefaults(c)
+			if c.Discord.TankaReaction != tt.want {
+				t.Errorf("TankaReaction = %q, want %q", c.Discord.TankaReaction, tt.want)
+			}
+		})
+	}
+}

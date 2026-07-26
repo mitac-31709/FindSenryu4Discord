@@ -253,6 +253,103 @@ func TestGetThreeRandomSenryus_暗号化有効時に復号されたデータを�
 	}
 }
 
+func TestGetTwoRandomNakasichi_件数不足と取得(t *testing.T) {
+	setupSenryuTestDB(t)
+	if err := crypto.Init(""); err != nil {
+		t.Fatalf("crypto init failed: %v", err)
+	}
+
+	got, err := GetTwoRandomNakasichi("server1")
+	if err != nil {
+		t.Fatalf("GetTwoRandomNakasichi failed: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil when empty, got %v", got)
+	}
+
+	spoiler := false
+	_, err = CreateSenryu(model.Senryu{
+		ServerID: "server1", AuthorID: "a1",
+		Kamigo: "古池や", Nakasichi: "蛙飛び込む", Simogo: "水の音",
+		Spoiler: &spoiler,
+	})
+	if err != nil {
+		t.Fatalf("CreateSenryu failed: %v", err)
+	}
+
+	// count=1 still returns 2 rows (same row can be picked twice via offset sampling)
+	got, err = GetTwoRandomNakasichi("server1")
+	if err != nil {
+		t.Fatalf("GetTwoRandomNakasichi failed: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 senryus even with 1 row, got %d", len(got))
+	}
+	if got[0].Nakasichi != "蛙飛び込む" || got[1].Nakasichi != "蛙飛び込む" {
+		t.Errorf("unexpected nakasichi: %q, %q", got[0].Nakasichi, got[1].Nakasichi)
+	}
+
+	_, err = CreateSenryu(model.Senryu{
+		ServerID: "server1", AuthorID: "a2",
+		Kamigo: "五月雨を", Nakasichi: "あつめて早し", Simogo: "最上川",
+		Spoiler: &spoiler,
+	})
+	if err != nil {
+		t.Fatalf("CreateSenryu failed: %v", err)
+	}
+
+	got, err = GetTwoRandomNakasichi("server1")
+	if err != nil {
+		t.Fatalf("GetTwoRandomNakasichi failed: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 senryus, got %d", len(got))
+	}
+	for i, s := range got {
+		if s.Nakasichi == "" {
+			t.Errorf("senryu[%d].Nakasichi is empty", i)
+		}
+	}
+}
+
+func TestGetTwoRandomNakasichi_暗号化有効時に復号される(t *testing.T) {
+	setupSenryuTestDB(t)
+	if err := crypto.Init(testEncryptionKey); err != nil {
+		t.Fatalf("crypto init failed: %v", err)
+	}
+
+	spoiler := false
+	for _, p := range []struct{ k, n, s string }{
+		{"五月雨を", "あつめて早し", "最上川"},
+		{"荒海や", "佐渡によこたふ", "天の川"},
+	} {
+		_, err := CreateSenryu(model.Senryu{
+			ServerID: "server1", AuthorID: "author1",
+			Kamigo: p.k, Nakasichi: p.n, Simogo: p.s,
+			Spoiler: &spoiler,
+		})
+		if err != nil {
+			t.Fatalf("CreateSenryu failed: %v", err)
+		}
+	}
+
+	got, err := GetTwoRandomNakasichi("server1")
+	if err != nil {
+		t.Fatalf("GetTwoRandomNakasichi failed: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2, got %d", len(got))
+	}
+	for i, s := range got {
+		if crypto.IsEncrypted(s.Nakasichi) {
+			t.Errorf("senryu[%d].Nakasichi should be decrypted", i)
+		}
+		if s.Nakasichi == "" {
+			t.Errorf("senryu[%d].Nakasichi is empty", i)
+		}
+	}
+}
+
 func TestCreateSenryu_暗号化無効時に平文のまま保存される(t *testing.T) {
 	setupSenryuTestDB(t)
 	if err := crypto.Init(""); err != nil {

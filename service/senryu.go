@@ -191,6 +191,48 @@ func GetThreeRandomSenryus(serverID string) ([]model.Senryu, error) {
 	return result, nil
 }
 
+// GetTwoRandomNakasichi returns two random non-spoiler senryus for tanka extension
+// (their Nakasichi phrases are used as the 4th and 5th lines).
+func GetTwoRandomNakasichi(serverID string) ([]model.Senryu, error) {
+	metrics.RecordDatabaseOperation("get_random_nakasichi")
+
+	var count int64
+	if err := db.DB.Model(&model.Senryu{}).Where("server_id = ? AND spoiler = ?", serverID, false).Count(&count).Error; err != nil {
+		metrics.RecordError("database")
+		logger.Warn("Failed to count senryus for nakasichi",
+			"error", err,
+			"server_id", serverID,
+		)
+		return nil, errors.Wrap(err, "failed to count senryus")
+	}
+
+	if count == 0 {
+		return nil, nil
+	}
+
+	result := make([]model.Senryu, 0, 2)
+	for i := 0; i < 2; i++ {
+		var s model.Senryu
+		offset := rand.Intn(int(count))
+		if err := db.DB.Where("server_id = ? AND spoiler = ?", serverID, false).Offset(offset).Limit(1).First(&s).Error; err != nil {
+			metrics.RecordError("database")
+			logger.Warn("Failed to get random senryu for nakasichi",
+				"error", err,
+				"server_id", serverID,
+			)
+			return nil, errors.Wrap(err, "failed to get random senryu")
+		}
+		result = append(result, s)
+	}
+
+	if err := decryptSenryuSlice(result); err != nil {
+		logger.Error("Failed to decrypt random nakasichi senryus", "error", err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // RankResult represents a ranking entry
 type RankResult struct {
 	Count    int
