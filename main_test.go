@@ -131,12 +131,43 @@ func TestParseYomeCount(t *testing.T) {
 		{content: "回詠め", wantOK: false},
 		{content: "詠むな", wantOK: false},
 		{content: "あ回詠め", wantOK: false},
+		{content: "短歌を詠め", wantOK: false},
+		{content: "3回短歌を詠め", wantOK: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.content, func(t *testing.T) {
 			count, ok, outOfRange := parseYomeCount(tt.content, max)
 			if ok != tt.wantOK || outOfRange != tt.wantOutRange || count != tt.wantCount {
 				t.Errorf("parseYomeCount(%q) = (%d, %v, %v), want (%d, %v, %v)",
+					tt.content, count, ok, outOfRange, tt.wantCount, tt.wantOK, tt.wantOutRange)
+			}
+		})
+	}
+}
+
+func TestParseTankaYomeCount(t *testing.T) {
+	const max = 10
+	tests := []struct {
+		content      string
+		wantCount    int
+		wantOK       bool
+		wantOutRange bool
+	}{
+		{content: "短歌を詠め", wantCount: 1, wantOK: true},
+		{content: "3回短歌を詠め", wantCount: 3, wantOK: true},
+		{content: "10回短歌を詠め", wantCount: 10, wantOK: true},
+		{content: "11回短歌を詠め", wantCount: 11, wantOK: true, wantOutRange: true},
+		{content: "0回短歌を詠め", wantCount: 0, wantOK: true, wantOutRange: true},
+		{content: "回短歌を詠め", wantOK: false},
+		{content: "詠め", wantOK: false},
+		{content: "3回詠め", wantOK: false},
+		{content: "あ回短歌を詠め", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.content, func(t *testing.T) {
+			count, ok, outOfRange := parseTankaYomeCount(tt.content, max)
+			if ok != tt.wantOK || outOfRange != tt.wantOutRange || count != tt.wantCount {
+				t.Errorf("parseTankaYomeCount(%q) = (%d, %v, %v), want (%d, %v, %v)",
 					tt.content, count, ok, outOfRange, tt.wantCount, tt.wantOK, tt.wantOutRange)
 			}
 		})

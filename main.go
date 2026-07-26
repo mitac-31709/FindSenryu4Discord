@@ -865,6 +865,23 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 	}
 
 	yomeMax := config.GetConf().Discord.YomeMax
+
+	if count, ok, outOfRange := parseTankaYomeCount(m.Content, yomeMax); ok {
+		if outOfRange {
+			msg := fmt.Sprintf("詠めるのは1〜%d回までです。", yomeMax)
+			if _, err := s.ChannelMessageSend(m.ChannelID, msg); err != nil {
+				logger.Warn("Failed to send tanka yome limit message", "error", err, "channel_id", m.ChannelID)
+			}
+			return true
+		}
+		for i := 0; i < count; i++ {
+			if err := sendRandomTanka(s, m.ChannelID, m.GuildID, m.ID); err != nil {
+				return true
+			}
+		}
+		return true
+	}
+
 	count, ok, outOfRange := parseYomeCount(m.Content, yomeMax)
 	if !ok {
 		return false
@@ -908,6 +925,53 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 	return true
 }
 
+// sendRandomTanka composes and sends a tanka from random senryu phrases.
+// reactionMessageID is used for ❌ reactions on failure (the user's command message).
+func sendRandomTanka(s *discordgo.Session, channelID, guildID, reactionMessageID string) error {
+	senryus, err := service.GetThreeRandomSenryus(guildID)
+	if err != nil {
+		logger.Error("Failed to get random senryus for tanka", "error", err)
+		s.MessageReactionAdd(channelID, reactionMessageID, "❌")
+		return err
+	}
+	if len(senryus) == 0 {
+		if _, err := s.ChannelMessageSend(channelID, "まだ誰も詠んでいません。あなたが先に詠んでください。"); err != nil {
+			logger.Warn("Failed to send message", "error", err, "channel_id", channelID)
+		}
+		return errors.New("no senryus")
+	}
+	extra, err := service.GetTwoRandomNakasichi(guildID)
+	if err != nil {
+		logger.Error("Failed to get random nakasichi for tanka", "error", err)
+		s.MessageReactionAdd(channelID, reactionMessageID, "❌")
+		return err
+	}
+	if len(extra) < 2 {
+		s.MessageReactionAdd(channelID, reactionMessageID, "❌")
+		return errors.New("not enough nakasichi")
+	}
+	phrases := []string{
+		senryus[0].Kamigo,
+		senryus[1].Nakasichi,
+		senryus[2].Simogo,
+		extra[0].Nakasichi,
+		extra[1].Nakasichi,
+	}
+	all := append(senryus, extra...)
+	content := buildTankaMessage(phrases, strings.Join(getWriters(all, guildID, s), ", "))
+	if _, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content: content,
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse: []discordgo.AllowedMentionType{},
+		},
+		Flags: discordgo.MessageFlagsSuppressEmbeds,
+	}); err != nil {
+		logger.Warn("Failed to send tanka message", "error", err, "channel_id", channelID)
+		return err
+	}
+	return nil
+}
+
 // parseYomeCount parses "詠め" or "n回詠め".
 // ok=false means the content is not a yome command.
 // outOfRange=true means it matched the pattern but n is outside [1, max].
@@ -916,6 +980,10 @@ func parseYomeCount(content string, max int) (count int, ok bool, outOfRange boo
 		return 1, true, false
 	}
 	if !strings.HasSuffix(content, "回詠め") {
+		return 0, false, false
+	}
+	// "n回短歌を詠め" is handled by parseTankaYomeCount.
+	if strings.Contains(content, "短歌") {
 		return 0, false, false
 	}
 	numStr := strings.TrimSuffix(content, "回詠め")
@@ -932,8 +1000,30 @@ func parseYomeCount(content string, max int) (count int, ok bool, outOfRange boo
 	return n, true, false
 }
 
-// parseYomeMessage parses a bot 「詠め」 reply.
-// ok is true only when the message is still a 3-phrase senryu (not yet tanka).
+// parseTankaYomeCount parses "短歌を詠め" or "n回短歌を詠め".
+func parseTankaYomeCount(content string, max int) (count int, ok bool, outOfRange bool) {
+	if content == "短歌を詠め" {
+		return 1, true, false
+	}
+	const suffix = "回短歌を詠め"
+	if !strings.HasSuffix(content, suffix) {
+		return 0, false, false
+	}
+	numStr := strings.TrimSuffix(content, suffix)
+	if numStr == "" {
+		return 0, false, false
+	}
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, false, false
+	}
+	if n < 1 || n > max {
+		return n, true, true
+	}
+	return n, true, false
+}
+
+// parseYomeMessage parses a bot 「詠め」 reply (ここで一句 with exactly 3 phrases).
 func parseYomeMessage(content string) (phrases []string, writers string, ok bool) {
 	const prefix = "ここで一句\n"
 	if !strings.HasPrefix(content, prefix) {
@@ -961,7 +1051,7 @@ func parseYomeMessage(content string) (phrases []string, writers string, ok bool
 	return phrases, writers, true
 }
 
-// buildTankaMessage builds the edited message content for a tanka (5 phrases).
+// buildTankaMessage builds the message content for a tanka (5 phrases).
 func buildTankaMessage(phrases []string, writers string) string {
 	return fmt.Sprintf("ここで一首\n「%s」\n詠み手: %s", strings.Join(phrases, " "), writers)
 }
@@ -1050,9 +1140,16 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 	}
 	mergedWriters := sliceUnique(append(existing, getWriters(extra, r.GuildID, s)...))
 
-	newContent := buildTankaMessage(phrases, strings.Join(mergedWriters, ", "))
-	if _, err := s.ChannelMessageEdit(r.ChannelID, r.MessageID, newContent); err != nil {
-		logger.Warn("Failed to edit message into tanka",
+	content := buildTankaMessage(phrases, strings.Join(mergedWriters, ", "))
+	if _, err := s.ChannelMessageSendComplex(r.ChannelID, &discordgo.MessageSend{
+		Content:   content,
+		Reference: &discordgo.MessageReference{MessageID: r.MessageID, ChannelID: r.ChannelID, GuildID: r.GuildID},
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse: []discordgo.AllowedMentionType{},
+		},
+		Flags: discordgo.MessageFlagsSuppressEmbeds,
+	}); err != nil {
+		logger.Warn("Failed to send tanka message from reaction",
 			"error", err, "channel_id", r.ChannelID, "message_id", r.MessageID)
 	}
 }
