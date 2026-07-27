@@ -3,7 +3,9 @@ package main
 import (
 	"testing"
 
+	"github.com/0x307e/go-haiku"
 	"github.com/bwmarrin/discordgo"
+	"github.com/ikawaha/kagome-dict/uni"
 	"github.com/jinzhu/gorm"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/u16-io/FindSenryu4Discord/db"
@@ -204,6 +206,28 @@ func TestIsJapaneseRich(t *testing.T) {
 				t.Errorf("isJapaneseRich(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFindHaikuSafe_記号文字で始まる川柳(t *testing.T) {
+	// 「P点に向かって引いた直線が」
+	// ピー(2)+テン(2)+ニ(1) / ムカッ(3)+テ(1)+ヒー(2)+タ(1) / チョクセン(4)+ガ(1)
+	haiku.UseDict(uni.Dict())
+	content := "P点に向かって引いた直線が"
+	got := findHaikuSafe(content, []int{5, 7, 5})
+	if len(got) == 0 {
+		t.Fatalf("expected senryu detection for %q, got none", content)
+	}
+	want := "P点に 向かって引いた 直線が"
+	found := false
+	for _, s := range got {
+		if s == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected %q in results, got %v", want, got)
 	}
 }
 

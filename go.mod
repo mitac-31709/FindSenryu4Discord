@@ -18,6 +18,10 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 )
 
+// 記号/文字（ラテン文字など）を句頭として認めるパッチ。
+// upstream (0x307e/go-haiku) に取り込まれたら remove する。
+replace github.com/0x307e/go-haiku => ./third_party/go-haiku
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
