@@ -3,4 +3,7 @@
 !**/*.sql
 !go.mod
 !go.sum
+!**/go.mod
+!**/go.sum
 !config.toml
+!third_party/**
