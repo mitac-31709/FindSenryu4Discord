@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/errors"
 	"github.com/jinzhu/gorm"
@@ -1004,5 +1005,145 @@ func TestGetLastSenryu_スポイラーなし川柳(t *testing.T) {
 	}
 	if got.Spoiler == nil || *got.Spoiler {
 		t.Error("Spoiler should be false")
+	}
+}
+
+func seedSenryuAt(t *testing.T, serverID, authorID string, createdAt time.Time) model.Senryu {
+	t.Helper()
+	f := false
+	s := model.Senryu{
+		ServerID:  serverID,
+		AuthorID:  authorID,
+		Kamigo:    "古池や",
+		Nakasichi: "蛙飛び込む",
+		Simogo:    "水の音",
+		Spoiler:   &f,
+		CreatedAt: createdAt,
+	}
+	if err := db.DB.Create(&s).Error; err != nil {
+		t.Fatalf("failed to seed senryu: %v", err)
+	}
+	return s
+}
+
+func TestCountSenryusFiltered_ユーザーと期間(t *testing.T) {
+	setupSenryuTestDB(t)
+	crypto.Init("")
+
+	day1 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+	day3 := time.Date(2024, 2, 1, 12, 0, 0, 0, time.UTC)
+
+	seedSenryuAt(t, "guild1", "user1", day1)
+	seedSenryuAt(t, "guild1", "user1", day2)
+	seedSenryuAt(t, "guild1", "user1", day3)
+	seedSenryuAt(t, "guild1", "user2", day2)
+	seedSenryuAt(t, "guild2", "user1", day2)
+
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	count, err := CountSenryusFiltered(SenryuFilter{
+		ServerID: "guild1",
+		AuthorID: "user1",
+		From:     from,
+		To:       to,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2, got %d", count)
+	}
+}
+
+func TestCountSenryusFiltered_期間のみ全ユーザー(t *testing.T) {
+	setupSenryuTestDB(t)
+	crypto.Init("")
+
+	day := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+	seedSenryuAt(t, "guild1", "user1", day)
+	seedSenryuAt(t, "guild1", "user2", day)
+	seedSenryuAt(t, "guild1", "user1", time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC))
+
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	count, err := CountSenryusFiltered(SenryuFilter{
+		ServerID: "guild1",
+		From:     from,
+		To:       to,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2, got %d", count)
+	}
+}
+
+func TestDeleteSenryusFiltered_該当のみ削除(t *testing.T) {
+	setupSenryuTestDB(t)
+	crypto.Init("")
+
+	day1 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 2, 1, 12, 0, 0, 0, time.UTC)
+	seedSenryuAt(t, "guild1", "user1", day1)
+	seedSenryuAt(t, "guild1", "user1", day2)
+	seedSenryuAt(t, "guild1", "user2", day1)
+
+	deleted, err := DeleteSenryusFiltered(SenryuFilter{
+		ServerID: "guild1",
+		AuthorID: "user1",
+		From:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:       time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", deleted)
+	}
+
+	remaining, err := CountSenryusByAuthor("guild1", "user1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if remaining != 1 {
+		t.Errorf("expected 1 remaining for user1, got %d", remaining)
+	}
+
+	user2Count, err := CountSenryusByAuthor("guild1", "user2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if user2Count != 1 {
+		t.Errorf("expected user2 untouched, got %d", user2Count)
+	}
+}
+
+func TestDeleteSenryusFiltered_ユーザーのみ(t *testing.T) {
+	setupSenryuTestDB(t)
+	crypto.Init("")
+	seedSenryus(t, "guild1", "user1", 3)
+	seedSenryus(t, "guild1", "user2", 2)
+
+	deleted, err := DeleteSenryusFiltered(SenryuFilter{
+		ServerID: "guild1",
+		AuthorID: "user1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("expected 3 deleted, got %d", deleted)
+	}
+
+	remaining, err := CountSenryusByAuthor("guild1", "user2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if remaining != 2 {
+		t.Errorf("expected 2 for user2, got %d", remaining)
 	}
 }

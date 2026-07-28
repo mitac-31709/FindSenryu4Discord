@@ -344,6 +344,76 @@ func CountSenryusByAuthor(serverID, authorID string) (int, error) {
 	return count, nil
 }
 
+// SenryuFilter specifies optional filters for bulk senryu queries/deletes.
+// From/To use a half-open interval [From, To). Zero times mean no bound.
+type SenryuFilter struct {
+	ServerID string
+	AuthorID string // empty = all authors in the server
+	From     time.Time
+	To       time.Time
+}
+
+func applySenryuFilter(q *gorm.DB, f SenryuFilter) *gorm.DB {
+	q = q.Where("server_id = ?", f.ServerID)
+	if f.AuthorID != "" {
+		q = q.Where("author_id = ?", f.AuthorID)
+	}
+	if !f.From.IsZero() {
+		q = q.Where("created_at >= ?", f.From)
+	}
+	if !f.To.IsZero() {
+		q = q.Where("created_at < ?", f.To)
+	}
+	return q
+}
+
+// CountSenryusFiltered returns the number of senryus matching the filter.
+func CountSenryusFiltered(f SenryuFilter) (int, error) {
+	metrics.RecordDatabaseOperation("count_senryus_filtered")
+
+	var count int
+	if err := applySenryuFilter(db.DB.Model(&model.Senryu{}), f).Count(&count).Error; err != nil {
+		metrics.RecordError("database")
+		logger.Warn("Failed to count senryus filtered",
+			"error", err,
+			"server_id", f.ServerID,
+			"author_id", f.AuthorID,
+			"from", f.From,
+			"to", f.To,
+		)
+		return 0, errors.Wrap(err, "failed to count senryus filtered")
+	}
+
+	return count, nil
+}
+
+// DeleteSenryusFiltered deletes all senryus matching the filter and returns the deleted count.
+func DeleteSenryusFiltered(f SenryuFilter) (int64, error) {
+	metrics.RecordDatabaseOperation("delete_senryus_filtered")
+
+	result := applySenryuFilter(db.DB, f).Delete(&model.Senryu{})
+	if result.Error != nil {
+		metrics.RecordError("database")
+		logger.Error("Failed to delete senryus filtered",
+			"error", result.Error,
+			"server_id", f.ServerID,
+			"author_id", f.AuthorID,
+			"from", f.From,
+			"to", f.To,
+		)
+		return 0, errors.Wrap(result.Error, "failed to delete senryus filtered")
+	}
+
+	logger.Info("Senryus deleted by filter",
+		"server_id", f.ServerID,
+		"author_id", f.AuthorID,
+		"from", f.From,
+		"to", f.To,
+		"count", result.RowsAffected,
+	)
+	return result.RowsAffected, nil
+}
+
 // GetSenryuByID returns a senryu by ID within a server
 func GetSenryuByID(id int, serverID string) (*model.Senryu, error) {
 	metrics.RecordDatabaseOperation("get_senryu_by_id")

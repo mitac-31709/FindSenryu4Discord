@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jinzhu/gorm"
@@ -270,5 +271,75 @@ func TestComponentsToSlice_非nil(t *testing.T) {
 	result := componentsToSlice(&components)
 	if len(result) != 1 {
 		t.Errorf("expected 1, got %d", len(result))
+	}
+}
+
+func TestParseDeleteDateRange_正常(t *testing.T) {
+	from, to, errMsg := parseDeleteDateRange("2024-01-01", "2024-01-31")
+	if errMsg != "" {
+		t.Fatalf("unexpected error: %s", errMsg)
+	}
+	jst := deleteJST()
+	wantFrom := time.Date(2024, 1, 1, 0, 0, 0, 0, jst)
+	wantTo := time.Date(2024, 2, 1, 0, 0, 0, 0, jst)
+	if !from.Equal(wantFrom) {
+		t.Errorf("from = %v, want %v", from, wantFrom)
+	}
+	if !to.Equal(wantTo) {
+		t.Errorf("to = %v, want %v", to, wantTo)
+	}
+}
+
+func TestParseDeleteDateRange_不正な形式(t *testing.T) {
+	_, _, errMsg := parseDeleteDateRange("2024/01/01", "")
+	if errMsg == "" {
+		t.Fatal("expected error for invalid from format")
+	}
+	_, _, errMsg = parseDeleteDateRange("", "not-a-date")
+	if errMsg == "" {
+		t.Fatal("expected error for invalid to format")
+	}
+}
+
+func TestParseDeleteDateRange_fromがtoより後(t *testing.T) {
+	_, _, errMsg := parseDeleteDateRange("2024-02-01", "2024-01-01")
+	if errMsg == "" {
+		t.Fatal("expected error when from is after to")
+	}
+}
+
+func TestParseDeleteDateRange_空は無制限(t *testing.T) {
+	from, to, errMsg := parseDeleteDateRange("", "")
+	if errMsg != "" {
+		t.Fatalf("unexpected error: %s", errMsg)
+	}
+	if !from.IsZero() || !to.IsZero() {
+		t.Errorf("expected zero times, got from=%v to=%v", from, to)
+	}
+}
+
+func TestBuildBulkDeleteConfirmText(t *testing.T) {
+	text := buildBulkDeleteConfirmText("user1", "2024-01-01", "2024-01-31", 12)
+	if !strings.Contains(text, "<@user1>") {
+		t.Errorf("expected user mention, got %q", text)
+	}
+	if !strings.Contains(text, "2024-01-01 〜 2024-01-31") {
+		t.Errorf("expected period, got %q", text)
+	}
+	if !strings.Contains(text, "12件") {
+		t.Errorf("expected count, got %q", text)
+	}
+}
+
+func TestBuildBulkDeleteResultText_全員(t *testing.T) {
+	text := buildBulkDeleteResultText("", "2024-01-01", "", 5)
+	if !strings.Contains(text, "全員") {
+		t.Errorf("expected 全員, got %q", text)
+	}
+	if !strings.Contains(text, "5 件") {
+		t.Errorf("expected count, got %q", text)
+	}
+	if !strings.Contains(text, "2024-01-01 〜 指定なし") {
+		t.Errorf("expected period, got %q", text)
 	}
 }
