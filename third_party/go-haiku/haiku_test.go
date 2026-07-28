@@ -267,6 +267,36 @@ func TestFindWithOpt_UnknownAlphabeticWordShouldResetState(t *testing.T) {
 	}
 }
 
+// 記号/文字（ラテン文字など）が句頭として認められることを確認する。
+// 例: 「P点に向かって引いた直線が」= ピーテンニ / ムカッテヒータ / チョクセンガ
+func TestFindWithOpt_KigouMojiCanLeadPhrase(t *testing.T) {
+	opts := &Opt{
+		Dict: uni.Dict(),
+	}
+	text := "P点に向かって引いた直線が"
+	result, err := FindWithOpt(text, []int{5, 7, 5}, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) == 0 {
+		t.Fatalf("expected haiku to be found in %q, got none", text)
+	}
+	want := "P点に 向かって引いた 直線が"
+	found := false
+	for _, s := range result {
+		if s == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected %q in results, got %v", want, result)
+	}
+	if !MatchWithOpt(text, []int{5, 7, 5}, opts) {
+		t.Errorf("expected %q to match 5-7-5", text)
+	}
+}
+
 // アラビア数字が個別トークン化され各桁の発音で偽のモーラ数になるバグの回避を確認する
 func TestFindWithOpt_ArabicDigitsShouldResetState(t *testing.T) {
 	opts := &Opt{
