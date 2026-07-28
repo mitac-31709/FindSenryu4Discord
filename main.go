@@ -63,13 +63,45 @@ var (
 		},
 		{
 			Name:        "delete",
-			Description: "指定ユーザーの川柳を削除します",
+			Description: "川柳を削除します",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionUser,
-					Name:        "user",
-					Description: "削除対象のユーザー",
-					Required:    true,
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "select",
+					Description: "川柳を選んで1件ずつ削除します",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionUser,
+							Name:        "user",
+							Description: "削除対象のユーザー",
+							Required:    true,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "bulk",
+					Description: "ユーザーや期間を指定して一括削除します",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionUser,
+							Name:        "user",
+							Description: "削除対象のユーザー（省略時は期間内の全員・管理者のみ）",
+							Required:    false,
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "from",
+							Description: "開始日（YYYY-MM-DD、この日を含む）",
+							Required:    false,
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "to",
+							Description: "終了日（YYYY-MM-DD、この日を含む）",
+							Required:    false,
+						},
+					},
 				},
 			},
 		},
@@ -576,6 +608,10 @@ func handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		commands.HandleDeleteCancel(s, i)
 	case strings.HasPrefix(customID, commands.DeletePagePrefix):
 		commands.HandleDeletePage(s, i)
+	case strings.HasPrefix(customID, commands.DeleteBulkConfirmPrefix):
+		commands.HandleDeleteBulkConfirm(s, i)
+	case customID == commands.DeleteBulkCancelCustomID:
+		commands.HandleDeleteBulkCancel(s, i)
 	case customID == commands.ContactCategoryCustomID:
 		commands.HandleContactCategorySelect(s, i)
 	case strings.HasPrefix(customID, commands.ContactReplyPrefix):
