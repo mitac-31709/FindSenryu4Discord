@@ -246,6 +246,24 @@ func TestFindHaiku_接頭辞付き(t *testing.T) {
 	}
 }
 
+func TestFindHaiku_記号文字で始まる川柳(t *testing.T) {
+	// 「P点に向かって引いた直線が」
+	// ピー(2)+テン(2)+ニ(1) / ムカッ(3)+テ(1)+ヒー(2)+タ(1) / チョクセン(4)+ガ(1)
+	text := "P点に向かって引いた直線が"
+	want := "P点に 向かって引いた 直線が"
+	got := detect.FindHaiku(text)
+	found := false
+	for _, m := range got {
+		if m == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("FindHaiku(%q) = %#v, want to contain %q", text, got, want)
+	}
+}
+
 func TestFindHaikuWithDebug_ログあり(t *testing.T) {
 	r := detect.FindHaikuWithDebug("おちんちん嗚呼おちんちんおちんちん", true)
 	if r.DebugLog == "" {
