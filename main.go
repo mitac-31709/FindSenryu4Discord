@@ -956,6 +956,8 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 			Flags: discordgo.MessageFlagsSuppressEmbeds,
 		}); err != nil {
 			logger.Warn("Failed to send senryu message", "error", err, "channel_id", m.ChannelID)
+		} else if err := service.RecordYome(m.GuildID); err != nil {
+			logger.Warn("Failed to record yome", "error", err, "guild_id", m.GuildID)
 		}
 	}
 	return true
@@ -1004,6 +1006,9 @@ func sendRandomTanka(s *discordgo.Session, channelID, guildID, reactionMessageID
 	}); err != nil {
 		logger.Warn("Failed to send tanka message", "error", err, "channel_id", channelID)
 		return err
+	}
+	if err := service.RecordYome(guildID); err != nil {
+		logger.Warn("Failed to record yome", "error", err, "guild_id", guildID)
 	}
 	return nil
 }
@@ -1187,6 +1192,8 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 	}); err != nil {
 		logger.Warn("Failed to send tanka message from reaction",
 			"error", err, "channel_id", r.ChannelID, "message_id", r.MessageID)
+	} else if err := service.RecordYome(r.GuildID); err != nil {
+		logger.Warn("Failed to record yome", "error", err, "guild_id", r.GuildID)
 	}
 }
 

@@ -41,3 +41,15 @@ type Metadata struct {
 	Key   string `gorm:"primaryKey;column:key"`
 	Value string `gorm:"column:value;not null"`
 }
+
+// YomeEvent records one successful bot yome (senryu or tanka) send.
+type YomeEvent struct {
+	ID        int       `gorm:"primaryKey;autoIncrement"`
+	ServerID  string    `gorm:"column:server_id;index"`
+	CreatedAt time.Time `gorm:"column:created_at;index"`
+}
+
+// TableName returns the table name for YomeEvent.
+func (YomeEvent) TableName() string {
+	return "yome_events"
+}

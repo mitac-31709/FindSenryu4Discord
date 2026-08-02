@@ -229,6 +229,13 @@ func (m *Manager) sendDailySummary() {
 		count = -1
 	}
 
+	// Yome count (senryu + tanka sends)
+	yomeCount, err := service.CountYomeByDateRange(from, to)
+	if err != nil {
+		logger.Error("Failed to count yome for daily summary", "error", err)
+		yomeCount = -1
+	}
+
 	// Guild count (API)
 	currentGuilds := m.countAllGuilds()
 	guildDiff := currentGuilds - m.prevGuildCount
@@ -261,6 +268,7 @@ func (m *Manager) sendDailySummary() {
 	// Build fields
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "✍️ 前日の川柳数", Value: formatCount(count, "句"), Inline: true},
+		{Name: "🎤 前日の詠んだ回数", Value: formatCount(yomeCount, "回"), Inline: true},
 		{Name: formatDiffEmoji("接続サーバー数", guildDiff), Value: formatDiffValue(currentGuilds, guildDiff), Inline: true},
 		{Name: formatDiffEmoji("延べユーザー数", userDiff), Value: formatDiffValue(currentUsers, userDiff), Inline: true},
 	}
