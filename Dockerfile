@@ -8,7 +8,7 @@ COPY third_party/go-haiku ./third_party/go-haiku
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o bot main.go
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o bot .
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o migrate ./cmd/migrate
 
 # Runtime stage
