@@ -9,3 +9,6 @@ data/
 
 FindSenryu4Discord
 *.out
+
+# graphify
+graphify-out/cache/
