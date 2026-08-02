@@ -985,14 +985,7 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 		return true
 
 	case yomeScheduled:
-		_, err := service.CreateScheduledYome(m.GuildID, m.ChannelID, m.Author.ID, req.RunAt, req.Count)
-		if errors.Is(err, service.ErrScheduledYomePendingExists) {
-			if _, err := s.ChannelMessageSend(m.ChannelID, "このチャンネルにはすでに予約があります。"); err != nil {
-				logger.Warn("Failed to send schedule busy message", "error", err, "channel_id", m.ChannelID)
-			}
-			return true
-		}
-		if err != nil {
+		if _, err := service.CreateScheduledYome(m.GuildID, m.ChannelID, m.Author.ID, req.RunAt, req.Count); err != nil {
 			logger.Error("Failed to create scheduled yome", "error", err)
 			s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
 			return true

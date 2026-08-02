@@ -10,40 +10,11 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 )
 
-var (
-	ErrScheduledYomePendingExists = errors.New("pending scheduled yome already exists for channel")
-	ErrScheduledYomeNotFound      = errors.New("scheduled yome not found")
-)
+var ErrScheduledYomeNotFound = errors.New("scheduled yome not found")
 
-// HasPendingScheduledYome reports whether the channel already has a pending reservation.
-func HasPendingScheduledYome(channelID string) (bool, error) {
-	metrics.RecordDatabaseOperation("has_pending_scheduled_yome")
-
-	var count int64
-	if err := db.DB.Model(&model.ScheduledYome{}).
-		Where("channel_id = ? AND status = ?", channelID, model.ScheduledYomePending).
-		Count(&count).Error; err != nil {
-		metrics.RecordError("database")
-		logger.Warn("Failed to check pending scheduled yome",
-			"error", err,
-			"channel_id", channelID,
-		)
-		return false, errors.Wrap(err, "failed to check pending scheduled yome")
-	}
-	return count > 0, nil
-}
-
-// CreateScheduledYome inserts a pending reservation. Rejects if the channel already has one pending.
+// CreateScheduledYome inserts a pending reservation.
 func CreateScheduledYome(guildID, channelID, requesterID string, runAt time.Time, count int) (*model.ScheduledYome, error) {
 	metrics.RecordDatabaseOperation("create_scheduled_yome")
-
-	exists, err := HasPendingScheduledYome(channelID)
-	if err != nil {
-		return nil, err
-	}
-	if exists {
-		return nil, ErrScheduledYomePendingExists
-	}
 
 	yome := model.ScheduledYome{
 		GuildID:     guildID,

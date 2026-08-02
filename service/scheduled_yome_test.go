@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/errors"
 	"github.com/jinzhu/gorm"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/u16-io/FindSenryu4Discord/db"
@@ -24,16 +23,25 @@ func setupScheduledYomeTestDB(t *testing.T) {
 	})
 }
 
-func TestCreateScheduledYome_同一チャンネルにpendingがある場合は拒否(t *testing.T) {
+func TestCreateScheduledYome_同一チャンネルに複数pendingを許可する(t *testing.T) {
 	setupScheduledYomeTestDB(t)
 
 	runAt := time.Now().Add(time.Hour)
 	if _, err := CreateScheduledYome("g1", "c1", "u1", runAt, 1); err != nil {
 		t.Fatalf("first create failed: %v", err)
 	}
-	_, err := CreateScheduledYome("g1", "c1", "u2", runAt.Add(time.Hour), 2)
-	if !errors.Is(err, ErrScheduledYomePendingExists) {
-		t.Fatalf("second create err = %v, want ErrScheduledYomePendingExists", err)
+	if _, err := CreateScheduledYome("g1", "c1", "u2", runAt.Add(time.Hour), 2); err != nil {
+		t.Fatalf("second create failed: %v", err)
+	}
+
+	var count int64
+	if err := db.DB.Model(&model.ScheduledYome{}).
+		Where("channel_id = ? AND status = ?", "c1", model.ScheduledYomePending).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("pending count = %d, want 2", count)
 	}
 }
 
@@ -67,11 +75,12 @@ func TestMarkScheduledYomeDone(t *testing.T) {
 	if err := MarkScheduledYomeDone(yome.ID); err != nil {
 		t.Fatalf("mark done: %v", err)
 	}
-	exists, err := HasPendingScheduledYome("c1")
-	if err != nil {
-		t.Fatalf("has pending: %v", err)
+
+	var got model.ScheduledYome
+	if err := db.DB.First(&got, yome.ID).Error; err != nil {
+		t.Fatalf("load: %v", err)
 	}
-	if exists {
-		t.Fatal("expected no pending after done")
+	if got.Status != model.ScheduledYomeDone {
+		t.Fatalf("status = %q, want %q", got.Status, model.ScheduledYomeDone)
 	}
 }
