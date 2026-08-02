@@ -32,11 +32,13 @@ type Config struct {
 
 // DiscordConfig holds Discord-related configuration
 type DiscordConfig struct {
-	Token          string `koanf:"token"`
-	Playing        string `koanf:"playing"`
-	WelcomeEnabled *bool  `koanf:"welcome_enabled"`
-	YomeMax        int    `koanf:"yome_max"`        // max for "n回詠め" (default 10)
-	TankaReaction  string `koanf:"tanka_reaction"` // reaction to extend 「詠め」 into tanka (default ☝️)
+	Token              string `koanf:"token"`
+	Playing            string `koanf:"playing"`
+	WelcomeEnabled     *bool  `koanf:"welcome_enabled"`
+	YomeMax            int    `koanf:"yome_max"`              // max for "n回詠め" (default 10)
+	YomeDurationMaxSec int    `koanf:"yome_duration_max_sec"` // max for "n秒間詠め" (default 30)
+	YomeScheduleMaxSec int    `koanf:"yome_schedule_max_sec"` // max relative schedule delay (default 72h)
+	TankaReaction      string `koanf:"tanka_reaction"`        // reaction to extend 「詠め」 into tanka (default ☝️)
 }
 
 // DatabaseConfig holds database configuration
@@ -135,6 +137,12 @@ func setDefaults(c *Config) {
 	}
 	if c.Discord.YomeMax <= 0 {
 		c.Discord.YomeMax = 10
+	}
+	if c.Discord.YomeDurationMaxSec <= 0 {
+		c.Discord.YomeDurationMaxSec = 30
+	}
+	if c.Discord.YomeScheduleMaxSec <= 0 {
+		c.Discord.YomeScheduleMaxSec = 72 * 60 * 60 // 72 hours
 	}
 	if c.Discord.TankaReaction == "" {
 		c.Discord.TankaReaction = "☝️"

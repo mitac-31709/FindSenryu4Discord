@@ -24,6 +24,7 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 	"github.com/u16-io/FindSenryu4Discord/pkg/permissions"
+	"github.com/u16-io/FindSenryu4Discord/pkg/yomesched"
 	"github.com/u16-io/FindSenryu4Discord/service"
 
 	"github.com/0x307e/go-haiku"
@@ -34,6 +35,7 @@ import (
 var (
 	startTime       time.Time
 	adminNotifier   *adminnotify.Manager
+	yomeScheduler   *yomesched.Manager
 	botReady        atomic.Bool
 	guildCacheTimer atomic.Pointer[time.Timer]
 	allSessions     []*discordgo.Session
@@ -326,6 +328,11 @@ func main() {
 		adminNotifier.Start()
 		adminNotifier.NotifyStarted()
 	}
+
+	// Start scheduled yome poller (restores pending jobs from DB on tick)
+	yomeScheduler = yomesched.NewManager(dg, sendRandomSenryu)
+	yomeScheduler.Start()
+
 	botReady.Store(true)
 
 	// Mark as ready
@@ -356,6 +363,11 @@ func main() {
 	if adminNotifier != nil {
 		adminNotifier.NotifyStopping()
 		adminNotifier.Stop(ctx)
+	}
+
+	// Stop scheduled yome manager
+	if yomeScheduler != nil {
+		yomeScheduler.Stop(ctx)
 	}
 
 	// Stop backup manager
@@ -901,6 +913,8 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 	}
 
 	yomeMax := config.GetConf().Discord.YomeMax
+	durationMaxSec := config.GetConf().Discord.YomeDurationMaxSec
+	scheduleMaxSec := config.GetConf().Discord.YomeScheduleMaxSec
 
 	if count, ok, outOfRange := parseTankaYomeCount(m.Content, yomeMax); ok {
 		if outOfRange {
@@ -918,49 +932,84 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 		return true
 	}
 
-	count, ok, outOfRange := parseYomeCount(m.Content, yomeMax)
+	req, ok := parseYomeRequest(m.Content, time.Now(), yomeMax, durationMaxSec, scheduleMaxSec)
 	if !ok {
 		return false
 	}
-	if outOfRange {
+
+	switch req.Err {
+	case yomeErrCountRange:
 		msg := fmt.Sprintf("詠めるのは1〜%d回までです。", yomeMax)
 		if _, err := s.ChannelMessageSend(m.ChannelID, msg); err != nil {
 			logger.Warn("Failed to send yome limit message", "error", err, "channel_id", m.ChannelID)
 		}
 		return true
+	case yomeErrDurationRange:
+		msg := fmt.Sprintf("詠めるのは1〜%d秒間までです。", durationMaxSec)
+		if _, err := s.ChannelMessageSend(m.ChannelID, msg); err != nil {
+			logger.Warn("Failed to send yome duration limit message", "error", err, "channel_id", m.ChannelID)
+		}
+		return true
+	case yomeErrScheduleRange:
+		hours := scheduleMaxSec / 3600
+		msg := fmt.Sprintf("予約できるのは1秒後から最大%d時間後までです。", hours)
+		if scheduleMaxSec < 3600 {
+			msg = fmt.Sprintf("予約できるのは1秒後から最大%d秒後までです。", scheduleMaxSec)
+		}
+		if _, err := s.ChannelMessageSend(m.ChannelID, msg); err != nil {
+			logger.Warn("Failed to send yome schedule limit message", "error", err, "channel_id", m.ChannelID)
+		}
+		return true
+	case yomeErrPastTime:
+		if _, err := s.ChannelMessageSend(m.ChannelID, "その時刻はすでに過ぎています。"); err != nil {
+			logger.Warn("Failed to send yome past time message", "error", err, "channel_id", m.ChannelID)
+		}
+		return true
 	}
 
-	for i := 0; i < count; i++ {
-		senryus, err := service.GetThreeRandomSenryus(m.GuildID)
-		if err != nil {
-			logger.Error("Failed to get random senryus", "error", err)
-			s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
-			return true
-		}
-		if len(senryus) == 0 {
-			if _, err := s.ChannelMessageSend(m.ChannelID, "まだ誰も詠んでいません。あなたが先に詠んでください。"); err != nil {
-				logger.Warn("Failed to send message", "error", err, "channel_id", m.ChannelID)
+	switch req.Kind {
+	case yomeDuration:
+		if !tryLockDurationYome(m.ChannelID) {
+			if _, err := s.ChannelMessageSend(m.ChannelID, "このチャンネルではすでに秒間詠みが実行中です。"); err != nil {
+				logger.Warn("Failed to send duration busy message", "error", err, "channel_id", m.ChannelID)
 			}
 			return true
 		}
-		if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
-			Content: fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
-				strings.Join([]string{
-					senryus[0].Kamigo,
-					senryus[1].Nakasichi,
-					senryus[2].Simogo,
-				}, " "), strings.Join(getWriters(senryus, m.GuildID, s), ", ")),
-			AllowedMentions: &discordgo.MessageAllowedMentions{
-				Parse: []discordgo.AllowedMentionType{},
-			},
-			Flags: discordgo.MessageFlagsSuppressEmbeds,
-		}); err != nil {
-			logger.Warn("Failed to send senryu message", "error", err, "channel_id", m.ChannelID)
-		} else if err := service.RecordYome(m.GuildID); err != nil {
-			logger.Warn("Failed to record yome", "error", err, "guild_id", m.GuildID)
+		ack := fmt.Sprintf("%d秒間詠みます。", req.DurationSec)
+		if _, err := s.ChannelMessageSend(m.ChannelID, ack); err != nil {
+			unlockDurationYome(m.ChannelID)
+			logger.Warn("Failed to send duration ack", "error", err, "channel_id", m.ChannelID)
+			return true
 		}
+		go runDurationYome(s, m.ChannelID, m.GuildID, m.ID, req.DurationSec)
+		return true
+
+	case yomeScheduled:
+		_, err := service.CreateScheduledYome(m.GuildID, m.ChannelID, m.Author.ID, req.RunAt, req.Count)
+		if errors.Is(err, service.ErrScheduledYomePendingExists) {
+			if _, err := s.ChannelMessageSend(m.ChannelID, "このチャンネルにはすでに予約があります。"); err != nil {
+				logger.Warn("Failed to send schedule busy message", "error", err, "channel_id", m.ChannelID)
+			}
+			return true
+		}
+		if err != nil {
+			logger.Error("Failed to create scheduled yome", "error", err)
+			s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
+			return true
+		}
+		if _, err := s.ChannelMessageSend(m.ChannelID, formatScheduledYomeAck(req)); err != nil {
+			logger.Warn("Failed to send schedule ack", "error", err, "channel_id", m.ChannelID)
+		}
+		return true
+
+	default: // yomeImmediate
+		for i := 0; i < req.Count; i++ {
+			if err := sendRandomSenryu(s, m.ChannelID, m.GuildID, m.ID); err != nil {
+				return true
+			}
+		}
+		return true
 	}
-	return true
 }
 
 // sendRandomTanka composes and sends a tanka from random senryu phrases.

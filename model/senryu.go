@@ -53,3 +53,27 @@ type YomeEvent struct {
 func (YomeEvent) TableName() string {
 	return "yome_events"
 }
+
+// ScheduledYome status values.
+const (
+	ScheduledYomePending   = "pending"
+	ScheduledYomeDone      = "done"
+	ScheduledYomeCancelled = "cancelled"
+)
+
+// ScheduledYome is a one-shot timed yome reservation.
+type ScheduledYome struct {
+	ID          int       `gorm:"primaryKey;autoIncrement"`
+	GuildID     string    `gorm:"column:guild_id"`
+	ChannelID   string    `gorm:"column:channel_id;index"`
+	RunAt       time.Time `gorm:"column:run_at;index"`
+	Count       int       `gorm:"column:count"`
+	RequesterID string    `gorm:"column:requester_id"`
+	Status      string    `gorm:"column:status;index"`
+	CreatedAt   time.Time `gorm:"column:created_at"`
+}
+
+// TableName returns the table name for ScheduledYome.
+func (ScheduledYome) TableName() string {
+	return "scheduled_yomes"
+}

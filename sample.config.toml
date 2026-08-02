@@ -3,6 +3,8 @@ token = ""
 playing = ""
 welcome_enabled = true  # サーバー参加時にウェルカムメッセージを送信するか
 yome_max = 10  # 「n回詠め」の上限
+yome_duration_max_sec = 30  # 「n秒間詠め」の上限秒数
+yome_schedule_max_sec = 259200  # 相対予約の上限秒数（デフォルト 72時間）
 tanka_reaction = "☝️"  # 「詠め」一句を短歌化するリアクション
 
 [database]
