@@ -18,7 +18,7 @@ func setupYomeTestDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test database: %v", err)
 	}
-	db.DB.AutoMigrate(&model.YomeEvent{})
+	db.DB.AutoMigrate(&model.YomeEvent{}, &model.Senryu{})
 	t.Cleanup(func() {
 		db.DB.Close()
 	})
@@ -161,11 +161,21 @@ func TestTopYomePhrases_同句がまとまる(t *testing.T) {
 		Kind: model.YomeKindSenryu, Kamigo: "古池や", Nakasichi: "中", Simogo: "下",
 	})
 
+	spoiler := false
+	for i := 0; i < 2; i++ {
+		if err := db.DB.Create(&model.Senryu{
+			ServerID: "g1", AuthorID: "u1",
+			Kamigo: "古池や", Nakasichi: "中", Simogo: "下", Spoiler: &spoiler,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	ranks, err := TopYomePhrases("g1", "kamigo", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ranks) < 1 || ranks[0].Phrase != "古池や" || ranks[0].Count != 3 {
+	if len(ranks) < 1 || ranks[0].Phrase != "古池や" || ranks[0].BotCount != 3 || ranks[0].HumanCount != 2 {
 		t.Fatalf("ranks = %+v", ranks)
 	}
 }

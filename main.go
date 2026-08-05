@@ -915,9 +915,9 @@ func buildYondeteDouEmbed(guildID string) (*discordgo.MessageEmbed, error) {
 		Timestamp: time.Now().Format(time.RFC3339),
 		Color:     0x5865F2,
 		Fields: []*discordgo.MessageEmbedField{
-			{Name: "上の句 TOP", Value: formatPhraseRanks(kamigo), Inline: false},
-			{Name: "中の句 TOP", Value: formatPhraseRanks(nakasichi), Inline: false},
-			{Name: "下の句 TOP", Value: formatPhraseRanks(simogo), Inline: false},
+			{Name: "上の句 TOP（Bot/人）", Value: formatPhraseRanks(kamigo), Inline: false},
+			{Name: "中の句 TOP（Bot/人）", Value: formatPhraseRanks(nakasichi), Inline: false},
+			{Name: "下の句 TOP（Bot/人）", Value: formatPhraseRanks(simogo), Inline: false},
 			{Name: "リアクション TOP", Value: formatReactionRanks(byReaction), Inline: false},
 		},
 	}
@@ -936,7 +936,7 @@ func formatPhraseRanks(ranks []service.PhraseRank) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%d. 「%s」 — 詠んだ回数 %d", i+1, r.Phrase, r.Count)
+		fmt.Fprintf(&b, "%d. 「%s」 — %d/%d", i+1, r.Phrase, r.BotCount, r.HumanCount)
 	}
 	return b.String()
 }
@@ -950,7 +950,7 @@ func formatReactionRanks(events []model.YomeEvent) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%d. 「%s」 — 詠まれた回数 %d", i+1, service.FormatYomeText(e), e.ReactionCount)
+		fmt.Fprintf(&b, "%d. 「%s」 — %d", i+1, service.FormatYomeText(e), e.ReactionCount)
 	}
 	return b.String()
 }

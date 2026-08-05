@@ -117,12 +117,16 @@ func CountYomeByDateRange(from, to time.Time) (int64, error) {
 }
 
 // PhraseRank is a phrase usage ranking entry.
+// BotCount is how often the bot used the phrase in yome; HumanCount is how often
+// humans saved it as that part of a senryu.
 type PhraseRank struct {
-	Phrase string
-	Count  int
+	Phrase     string
+	BotCount   int
+	HumanCount int
 }
 
 // TopYomePhrases returns the most-used kamigo/nakasichi/simogo phrases for a server.
+// Ranking is by bot yome usage; each entry also includes human senryu usage for that phrase.
 // part must be "kamigo", "nakasichi", or "simogo".
 func TopYomePhrases(serverID, part string, limit int) ([]PhraseRank, error) {
 	col, ok := yomePhraseColumn(part)
@@ -134,13 +138,17 @@ func TopYomePhrases(serverID, part string, limit int) ([]PhraseRank, error) {
 	}
 	metrics.RecordDatabaseOperation("top_yome_phrases")
 
-	var ranks []PhraseRank
+	type botRow struct {
+		Phrase string
+		Count  int
+	}
+	var botRanks []botRow
 	query := "SELECT " + col + " AS phrase, COUNT(*) AS count FROM yome_events" +
 		" WHERE server_id = ? AND " + col + " IS NOT NULL AND " + col + " != ''" +
 		" GROUP BY " + col +
 		" ORDER BY count DESC" +
 		" LIMIT ?"
-	if err := db.DB.Raw(query, serverID, limit).Scan(&ranks).Error; err != nil {
+	if err := db.DB.Raw(query, serverID, limit).Scan(&botRanks).Error; err != nil {
 		metrics.RecordError("database")
 		logger.Warn("Failed to get top yome phrases",
 			"error", err,
@@ -149,7 +157,37 @@ func TopYomePhrases(serverID, part string, limit int) ([]PhraseRank, error) {
 		)
 		return nil, errors.Wrap(err, "failed to get top yome phrases")
 	}
+
+	ranks := make([]PhraseRank, 0, len(botRanks))
+	for _, r := range botRanks {
+		human, err := countSenryuPhrase(serverID, col, r.Phrase)
+		if err != nil {
+			return nil, err
+		}
+		ranks = append(ranks, PhraseRank{
+			Phrase:     r.Phrase,
+			BotCount:   r.Count,
+			HumanCount: human,
+		})
+	}
 	return ranks, nil
+}
+
+func countSenryuPhrase(serverID, col, phrase string) (int, error) {
+	metrics.RecordDatabaseOperation("count_senryu_phrase")
+	var count int64
+	// col is whitelist-validated via yomePhraseColumn.
+	q := "SELECT COUNT(*) FROM senryus WHERE server_id = ? AND " + col + " = ?"
+	if err := db.DB.Raw(q, serverID, phrase).Row().Scan(&count); err != nil {
+		metrics.RecordError("database")
+		logger.Warn("Failed to count senryu phrase",
+			"error", err,
+			"server_id", serverID,
+			"column", col,
+		)
+		return 0, errors.Wrap(err, "failed to count senryu phrase")
+	}
+	return int(count), nil
 }
 
 func yomePhraseColumn(part string) (string, bool) {

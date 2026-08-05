@@ -458,8 +458,8 @@ func TestFormatPhraseRanks(t *testing.T) {
 	if got := formatPhraseRanks(nil); got != "（なし）" {
 		t.Errorf("empty = %q", got)
 	}
-	got := formatPhraseRanks([]service.PhraseRank{{Phrase: "古池や", Count: 3}})
-	want := "1. 「古池や」 — 詠んだ回数 3"
+	got := formatPhraseRanks([]service.PhraseRank{{Phrase: "古池や", BotCount: 3, HumanCount: 5}})
+	want := "1. 「古池や」 — 3/5"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -472,7 +472,7 @@ func TestFormatReactionRanks(t *testing.T) {
 	got := formatReactionRanks([]model.YomeEvent{{
 		Kamigo: "あ", Nakasichi: "い", Simogo: "う", ReactionCount: 7,
 	}})
-	want := "1. 「あ い う」 — 詠まれた回数 7"
+	want := "1. 「あ い う」 — 7"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
