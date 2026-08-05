@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -19,6 +20,7 @@ var (
 	backupManager *backup.Manager
 	startTime     time.Time
 	allSessions   []*discordgo.Session
+	importMu      sync.Mutex
 )
 
 // SetBackupManager sets the backup manager for admin commands
@@ -67,14 +69,20 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 				},
 				{
 					Name:        "import",
-					Description: "チャンネル履歴から過去の川柳検出または詠んだ句をDBへ取り込みます",
+					Description: "チャンネルまたはサーバー全体の履歴から過去の川柳検出／詠んだ句をDBへ取り込みます",
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Options: []*discordgo.ApplicationCommandOption{
 						{
 							Name:        "channel_id",
-							Description: "取り込むチャンネルのID（開発者モードでコピー）",
+							Description: "取り込むチャンネルのID（guild_id とどちらか一方）",
 							Type:        discordgo.ApplicationCommandOptionString,
-							Required:    true,
+							Required:    false,
+						},
+						{
+							Name:        "guild_id",
+							Description: "サーバー一括取り込みのGuild ID（channel_id とどちらか一方）",
+							Type:        discordgo.ApplicationCommandOptionString,
+							Required:    false,
 						},
 						{
 							Name:        "kind",
@@ -100,7 +108,7 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 						},
 						{
 							Name:        "limit",
-							Description: "走査するメッセージ上限（デフォルト5000、最大50000）",
+							Description: "チャンネルごとの走査メッセージ上限（デフォルト5000、最大50000）",
 							Type:        discordgo.ApplicationCommandOptionInteger,
 							Required:    false,
 							MinValue:    floatPtr(1),
@@ -178,6 +186,7 @@ func floatPtr(v float64) *float64 { return &v }
 
 func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, options []*discordgo.ApplicationCommandInteractionDataOption) {
 	var channelID string
+	var guildID string
 	var dryRun bool
 	var overwrite bool
 	var limit int
@@ -187,6 +196,8 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		switch opt.Name {
 		case "channel_id":
 			channelID = strings.TrimSpace(opt.StringValue())
+		case "guild_id":
+			guildID = strings.TrimSpace(opt.StringValue())
 		case "kind":
 			kind = strings.TrimSpace(opt.StringValue())
 		case "overwrite":
@@ -198,8 +209,20 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		}
 	}
 
-	if channelID == "" || !isSnowflake(channelID) {
+	hasChannel := channelID != ""
+	hasGuild := guildID != ""
+	switch {
+	case hasChannel && hasGuild:
+		respondError(s, i, "channel_id と guild_id は同時に指定できません。どちらか一方を指定してください")
+		return
+	case !hasChannel && !hasGuild:
+		respondError(s, i, "channel_id または guild_id のいずれかを指定してください")
+		return
+	case hasChannel && !isSnowflake(channelID):
 		respondError(s, i, "有効な channel_id を指定してください（数字のみの Discord ID）")
+		return
+	case hasGuild && !isSnowflake(guildID):
+		respondError(s, i, "有効な guild_id を指定してください（数字のみの Discord ID）")
 		return
 	}
 	if kind != service.ImportKindDetection && kind != service.ImportKindYome {
@@ -228,16 +251,33 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		return
 	}
 
-	result, err := service.ImportChannelHistory(s, service.ImportOptions{
+	if !importMu.TryLock() {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: strPtr("別の import が実行中です。完了してから再実行してください。"),
+		})
+		return
+	}
+	defer importMu.Unlock()
+
+	opts := service.ImportOptions{
 		ChannelID:    channelID,
+		GuildID:      guildID,
 		SourceBotIDs: sourceBotIDs,
 		DryRun:       dryRun,
 		Overwrite:    overwrite,
 		Limit:        limit,
 		Kind:         kind,
-	})
+	}
+
+	var result service.ImportResult
+	var err error
+	if hasGuild {
+		result, err = service.ImportGuildHistory(s, opts)
+	} else {
+		result, err = service.ImportChannelHistory(s, opts)
+	}
 	if err != nil {
-		logger.Error("Channel import failed", "error", err, "channel_id", channelID, "kind", kind)
+		logger.Error("Import failed", "error", err, "channel_id", channelID, "guild_id", guildID, "kind", kind)
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("インポートに失敗しました: " + err.Error()),
 		})
@@ -247,6 +287,11 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 	title := "Import Complete"
 	if dryRun {
 		title = "Import Dry Run"
+	}
+
+	scope := fmt.Sprintf("channel_id: `%s`", channelID)
+	if hasGuild {
+		scope = fmt.Sprintf("guild_id: `%s`", guildID)
 	}
 
 	fields := []*discordgo.MessageEmbedField{
@@ -259,6 +304,12 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		{Name: "Skipped (duplicate)", Value: fmt.Sprintf("%d", result.SkippedDuplicate), Inline: true},
 		{Name: "Errors", Value: fmt.Sprintf("%d", result.Errors), Inline: true},
 	}
+	if hasGuild {
+		fields = append(fields,
+			&discordgo.MessageEmbedField{Name: "Channels OK", Value: fmt.Sprintf("%d", result.ChannelsOK), Inline: true},
+			&discordgo.MessageEmbedField{Name: "Channels Failed", Value: fmt.Sprintf("%d", result.ChannelsFailed), Inline: true},
+		)
+	}
 	if kind == service.ImportKindDetection {
 		fields = append(fields, &discordgo.MessageEmbedField{
 			Name: "Skipped (no parent)", Value: fmt.Sprintf("%d", result.SkippedNoParent), Inline: true,
@@ -267,7 +318,7 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 
 	embed := &discordgo.MessageEmbed{
 		Title:       title,
-		Description: fmt.Sprintf("channel_id: `%s`\nsource_bot_ids: `%s`", channelID, strings.Join(sourceBotIDs, "`, `")),
+		Description: fmt.Sprintf("%s\nsource_bot_ids: `%s`", scope, strings.Join(sourceBotIDs, "`, `")),
 		Color:       0x5865F2,
 		Timestamp:   time.Now().Format(time.RFC3339),
 		Fields:      fields,

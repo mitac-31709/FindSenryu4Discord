@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/crypto"
 )
@@ -234,6 +235,39 @@ func TestAssignYomeRequesters_トリガーから初回投稿は間隔判定し�
 		if p.Event.RequesterID != "user-a" {
 			t.Errorf("message %s requester = %q, want user-a", p.Event.MessageID, p.Event.RequesterID)
 		}
+	}
+}
+
+func TestIsImportableMessageChannel(t *testing.T) {
+	tests := []struct {
+		typ  discordgo.ChannelType
+		want bool
+	}{
+		{discordgo.ChannelTypeGuildText, true},
+		{discordgo.ChannelTypeGuildNews, true},
+		{discordgo.ChannelTypeGuildPublicThread, true},
+		{discordgo.ChannelTypeGuildPrivateThread, true},
+		{discordgo.ChannelTypeGuildNewsThread, true},
+		{discordgo.ChannelTypeGuildForum, false},
+		{discordgo.ChannelTypeGuildVoice, false},
+		{discordgo.ChannelTypeGuildCategory, false},
+	}
+	for _, tt := range tests {
+		got := isImportableMessageChannel(&discordgo.Channel{Type: tt.typ})
+		if got != tt.want {
+			t.Errorf("type %d -> %v, want %v", tt.typ, got, tt.want)
+		}
+	}
+	if isImportableMessageChannel(nil) {
+		t.Error("nil channel should be false")
+	}
+}
+
+func TestAddImportResult(t *testing.T) {
+	dst := ImportResult{Scanned: 1, ChannelsOK: 1}
+	addImportResult(&dst, ImportResult{Scanned: 2, Matched: 3, Errors: 1})
+	if dst.Scanned != 3 || dst.Matched != 3 || dst.Errors != 1 || dst.ChannelsOK != 1 {
+		t.Errorf("dst = %+v", dst)
 	}
 }
 

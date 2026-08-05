@@ -77,6 +77,8 @@ type ImportResult struct {
 	SkippedDuplicate int
 	SkippedNoParent  int
 	Errors           int
+	ChannelsOK       int // guild import: channels completed without fatal error
+	ChannelsFailed   int // guild import: channels that returned an error
 }
 
 // ImportOptions controls channel history import.
@@ -86,7 +88,7 @@ type ImportOptions struct {
 	SourceBotIDs []string
 	DryRun       bool
 	Overwrite    bool   // update existing rows instead of skipping duplicates
-	Limit        int    // max messages to scan (0 = default)
+	Limit        int    // max messages to scan per channel (0 = default)
 	Kind         string // "detection" (default) or "yome"
 }
 
@@ -122,6 +124,135 @@ func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResul
 		return ImportYomeChannelHistory(s, opts)
 	}
 	return importDetectionChannelHistory(s, opts)
+}
+
+// isImportableMessageChannel reports channels whose message history can be scanned.
+func isImportableMessageChannel(ch *discordgo.Channel) bool {
+	if ch == nil {
+		return false
+	}
+	switch ch.Type {
+	case discordgo.ChannelTypeGuildText,
+		discordgo.ChannelTypeGuildNews,
+		discordgo.ChannelTypeGuildPublicThread,
+		discordgo.ChannelTypeGuildPrivateThread,
+		discordgo.ChannelTypeGuildNewsThread:
+		return true
+	default:
+		return false
+	}
+}
+
+func addImportResult(dst *ImportResult, src ImportResult) {
+	dst.Scanned += src.Scanned
+	dst.Matched += src.Matched
+	dst.Imported += src.Imported
+	dst.Updated += src.Updated
+	dst.SkippedDuplicate += src.SkippedDuplicate
+	dst.SkippedNoParent += src.SkippedNoParent
+	dst.Errors += src.Errors
+}
+
+// listGuildImportChannels returns text/news channels plus active threads for a guild.
+func listGuildImportChannels(s *discordgo.Session, guildID string) ([]*discordgo.Channel, error) {
+	channels, err := s.GuildChannels(guildID)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to list guild channels")
+	}
+	seen := make(map[string]struct{}, len(channels))
+	out := make([]*discordgo.Channel, 0, len(channels))
+	for _, ch := range channels {
+		if !isImportableMessageChannel(ch) {
+			continue
+		}
+		if _, ok := seen[ch.ID]; ok {
+			continue
+		}
+		seen[ch.ID] = struct{}{}
+		out = append(out, ch)
+	}
+
+	threads, err := s.GuildThreadsActive(guildID)
+	if err != nil {
+		// Active-thread listing is best-effort; continue with guild channels.
+		logger.Warn("Guild import: failed to list active threads",
+			"error", err, "guild_id", guildID)
+	} else if threads != nil {
+		for _, ch := range threads.Threads {
+			if !isImportableMessageChannel(ch) {
+				continue
+			}
+			if _, ok := seen[ch.ID]; ok {
+				continue
+			}
+			seen[ch.ID] = struct{}{}
+			out = append(out, ch)
+		}
+	}
+	return out, nil
+}
+
+// ImportGuildHistory imports message history from all importable channels in a guild.
+// opts.Limit applies per channel. Forum parent channels are skipped; active threads are included.
+func ImportGuildHistory(s *discordgo.Session, opts ImportOptions) (ImportResult, error) {
+	var result ImportResult
+	if opts.GuildID == "" {
+		return result, errors.New("guild_id is required")
+	}
+	if len(opts.SourceBotIDs) == 0 {
+		return result, errors.New("source_bot_ids is empty")
+	}
+
+	channels, err := listGuildImportChannels(s, opts.GuildID)
+	if err != nil {
+		return result, err
+	}
+
+	logger.Info("Guild import starting",
+		"guild_id", opts.GuildID,
+		"kind", opts.Kind,
+		"channels", len(channels),
+		"dry_run", opts.DryRun,
+		"overwrite", opts.Overwrite,
+	)
+
+	for i, ch := range channels {
+		chOpts := opts
+		chOpts.ChannelID = ch.ID
+		chOpts.GuildID = opts.GuildID
+
+		partial, err := ImportChannelHistory(s, chOpts)
+		if err != nil {
+			result.ChannelsFailed++
+			result.Errors++
+			logger.Warn("Guild import: channel failed",
+				"error", err,
+				"guild_id", opts.GuildID,
+				"channel_id", ch.ID,
+				"channel_name", ch.Name,
+				"index", i+1,
+				"total", len(channels),
+			)
+			time.Sleep(importPageDelay)
+			continue
+		}
+		addImportResult(&result, partial)
+		result.ChannelsOK++
+		time.Sleep(importPageDelay)
+	}
+
+	logger.Info("Guild import finished",
+		"guild_id", opts.GuildID,
+		"kind", opts.Kind,
+		"channels_ok", result.ChannelsOK,
+		"channels_failed", result.ChannelsFailed,
+		"scanned", result.Scanned,
+		"matched", result.Matched,
+		"imported", result.Imported,
+		"updated", result.Updated,
+		"errors", result.Errors,
+	)
+	return result, nil
 }
 
 func importDetectionChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResult, error) {
