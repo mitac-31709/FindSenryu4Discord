@@ -67,7 +67,7 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 				},
 				{
 					Name:        "import",
-					Description: "チャンネル履歴から過去の川柳検出をDBへ取り込みます",
+					Description: "チャンネル履歴から過去の川柳検出または詠んだ句をDBへ取り込みます",
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Options: []*discordgo.ApplicationCommandOption{
 						{
@@ -75,6 +75,16 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 							Description: "取り込むチャンネルのID（開発者モードでコピー）",
 							Type:        discordgo.ApplicationCommandOptionString,
 							Required:    true,
+						},
+						{
+							Name:        "kind",
+							Description: "取り込む種類（detection=検出川柳 / yome=詠んだ句）",
+							Type:        discordgo.ApplicationCommandOptionString,
+							Required:    false,
+							Choices: []*discordgo.ApplicationCommandOptionChoice{
+								{Name: "detection", Value: "detection"},
+								{Name: "yome", Value: "yome"},
+							},
 						},
 						{
 							Name:        "dry_run",
@@ -164,11 +174,14 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 	var channelID string
 	var dryRun bool
 	var limit int
+	kind := service.ImportKindDetection
 
 	for _, opt := range options {
 		switch opt.Name {
 		case "channel_id":
 			channelID = strings.TrimSpace(opt.StringValue())
+		case "kind":
+			kind = strings.TrimSpace(opt.StringValue())
 		case "dry_run":
 			dryRun = opt.BoolValue()
 		case "limit":
@@ -178,6 +191,10 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 
 	if channelID == "" || !isSnowflake(channelID) {
 		respondError(s, i, "有効な channel_id を指定してください（数字のみの Discord ID）")
+		return
+	}
+	if kind != service.ImportKindDetection && kind != service.ImportKindYome {
+		respondError(s, i, "kind は detection または yome を指定してください")
 		return
 	}
 
@@ -207,9 +224,10 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		SourceBotIDs: sourceBotIDs,
 		DryRun:       dryRun,
 		Limit:        limit,
+		Kind:         kind,
 	})
 	if err != nil {
-		logger.Error("Channel import failed", "error", err, "channel_id", channelID)
+		logger.Error("Channel import failed", "error", err, "channel_id", channelID, "kind", kind)
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: strPtr("インポートに失敗しました: " + err.Error()),
 		})
@@ -221,19 +239,26 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		title = "Import Dry Run"
 	}
 
+	fields := []*discordgo.MessageEmbedField{
+		{Name: "Kind", Value: kind, Inline: true},
+		{Name: "Scanned", Value: fmt.Sprintf("%d", result.Scanned), Inline: true},
+		{Name: "Matched", Value: fmt.Sprintf("%d", result.Matched), Inline: true},
+		{Name: "Imported", Value: fmt.Sprintf("%d", result.Imported), Inline: true},
+		{Name: "Skipped (duplicate)", Value: fmt.Sprintf("%d", result.SkippedDuplicate), Inline: true},
+		{Name: "Errors", Value: fmt.Sprintf("%d", result.Errors), Inline: true},
+	}
+	if kind == service.ImportKindDetection {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "Skipped (no parent)", Value: fmt.Sprintf("%d", result.SkippedNoParent), Inline: true,
+		})
+	}
+
 	embed := &discordgo.MessageEmbed{
 		Title:       title,
 		Description: fmt.Sprintf("channel_id: `%s`\nsource_bot_ids: `%s`", channelID, strings.Join(sourceBotIDs, "`, `")),
 		Color:       0x5865F2,
 		Timestamp:   time.Now().Format(time.RFC3339),
-		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Scanned", Value: fmt.Sprintf("%d", result.Scanned), Inline: true},
-			{Name: "Matched", Value: fmt.Sprintf("%d", result.Matched), Inline: true},
-			{Name: "Imported", Value: fmt.Sprintf("%d", result.Imported), Inline: true},
-			{Name: "Skipped (duplicate)", Value: fmt.Sprintf("%d", result.SkippedDuplicate), Inline: true},
-			{Name: "Skipped (no parent)", Value: fmt.Sprintf("%d", result.SkippedNoParent), Inline: true},
-			{Name: "Errors", Value: fmt.Sprintf("%d", result.Errors), Inline: true},
-		},
+		Fields:      fields,
 	}
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{

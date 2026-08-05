@@ -81,8 +81,14 @@ type ImportOptions struct {
 	ChannelID    string
 	SourceBotIDs []string
 	DryRun       bool
-	Limit        int // max messages to scan (0 = default)
+	Limit        int    // max messages to scan (0 = default)
+	Kind         string // "detection" (default) or "yome"
 }
+
+const (
+	ImportKindDetection = "detection"
+	ImportKindYome      = "yome"
+)
 
 func resolveImportLimit(limit int) int {
 	if limit <= 0 {
@@ -105,7 +111,15 @@ func isSourceBot(authorID string, sourceBotIDs []string) bool {
 
 // ImportChannelHistory scans a channel for past detection replies and imports them.
 // sourceBotIDs must contain at least one bot user ID (caller should include self when config is empty).
+// When opts.Kind is ImportKindYome, imports bot yome messages into yome_events instead.
 func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResult, error) {
+	if opts.Kind == ImportKindYome {
+		return ImportYomeChannelHistory(s, opts)
+	}
+	return importDetectionChannelHistory(s, opts)
+}
+
+func importDetectionChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResult, error) {
 	var result ImportResult
 
 	if opts.ChannelID == "" {
@@ -238,12 +252,143 @@ func ImportChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResul
 	logger.Info("Channel history import finished",
 		"channel_id", opts.ChannelID,
 		"guild_id", guildID,
+		"kind", ImportKindDetection,
 		"dry_run", opts.DryRun,
 		"scanned", result.Scanned,
 		"matched", result.Matched,
 		"imported", result.Imported,
 		"skipped_duplicate", result.SkippedDuplicate,
 		"skipped_no_parent", result.SkippedNoParent,
+		"errors", result.Errors,
+	)
+
+	return result, nil
+}
+
+func sumMessageReactions(msg *discordgo.Message) int {
+	if msg == nil {
+		return 0
+	}
+	total := 0
+	for _, r := range msg.Reactions {
+		total += r.Count
+	}
+	return total
+}
+
+// ImportYomeChannelHistory scans a channel for past bot yome messages and imports them.
+func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportResult, error) {
+	var result ImportResult
+
+	if opts.ChannelID == "" {
+		return result, errors.New("channel_id is required")
+	}
+	if len(opts.SourceBotIDs) == 0 {
+		return result, errors.New("source_bot_ids is empty")
+	}
+
+	limit := resolveImportLimit(opts.Limit)
+	guildID := opts.GuildID
+
+	if guildID == "" {
+		ch, err := s.Channel(opts.ChannelID)
+		if err != nil {
+			return result, errors.Wrap(err, "failed to fetch channel")
+		}
+		guildID = ch.GuildID
+		if guildID == "" {
+			return result, errors.New("channel is not in a guild")
+		}
+	}
+
+	var beforeID string
+	for result.Scanned < limit {
+		remaining := limit - result.Scanned
+		pageSize := channelHistoryPage
+		if remaining < pageSize {
+			pageSize = remaining
+		}
+
+		messages, err := s.ChannelMessages(opts.ChannelID, pageSize, beforeID, "", "")
+		if err != nil {
+			return result, errors.Wrap(err, "failed to fetch channel messages")
+		}
+		if len(messages) == 0 {
+			break
+		}
+
+		for _, msg := range messages {
+			result.Scanned++
+			beforeID = msg.ID
+
+			if msg.Author == nil || !isSourceBot(msg.Author.ID, opts.SourceBotIDs) {
+				continue
+			}
+
+			parsed, ok := ParseYomeBotMessage(msg.Content)
+			if !ok {
+				continue
+			}
+			result.Matched++
+
+			exists, err := ExistsByYomeMessageID(msg.ID)
+			if err != nil {
+				result.Errors++
+				logger.Warn("Import yome: failed to check duplicate", "error", err, "message_id", msg.ID)
+				continue
+			}
+			if exists {
+				result.SkippedDuplicate++
+				continue
+			}
+
+			event := model.YomeEvent{
+				ServerID:      guildID,
+				ChannelID:     opts.ChannelID,
+				MessageID:     msg.ID,
+				Kind:          parsed.Kind,
+				Kamigo:        parsed.Kamigo,
+				Nakasichi:     parsed.Nakasichi,
+				Simogo:        parsed.Simogo,
+				Nanaichi:      parsed.Nanaichi,
+				Nananichi:     parsed.Nananichi,
+				ReactionCount: sumMessageReactions(msg),
+				CreatedAt:     msg.Timestamp.UTC(),
+			}
+
+			if opts.DryRun {
+				result.Imported++
+				time.Sleep(importMessageDelay)
+				continue
+			}
+
+			if err := RecordYome(event); err != nil {
+				result.Errors++
+				logger.Warn("Import yome: failed to record",
+					"error", err,
+					"message_id", msg.ID,
+				)
+				continue
+			}
+			result.Imported++
+			time.Sleep(importMessageDelay)
+		}
+
+		if len(messages) < pageSize {
+			break
+		}
+		time.Sleep(importPageDelay)
+	}
+
+	logger.Info("Channel yome import finished",
+		"channel_id", opts.ChannelID,
+		"guild_id", guildID,
+		"kind", ImportKindYome,
+		"dry_run", opts.DryRun,
+		"scanned", result.Scanned,
+		"matched", result.Matched,
+		"imported", result.Imported,
+		"skipped_duplicate", result.SkippedDuplicate,
 		"errors", result.Errors,
 	)
 
