@@ -225,6 +225,70 @@ func TopYomeByReaction(serverID string, limit int) ([]model.YomeEvent, error) {
 	return events, nil
 }
 
+// YomeStats is aggregate yome stats for a server.
+type YomeStats struct {
+	TotalYomes       int64
+	UniqueRequesters int64
+}
+
+// GetYomeStats returns yome send counts and unique requesters for a server.
+func GetYomeStats(serverID string) (YomeStats, error) {
+	metrics.RecordDatabaseOperation("get_yome_stats")
+
+	var stats YomeStats
+	if err := db.DB.Model(&model.YomeEvent{}).
+		Where("server_id = ?", serverID).
+		Count(&stats.TotalYomes).Error; err != nil {
+		return stats, errors.Wrap(err, "failed to count yomes")
+	}
+
+	var count int64
+	if err := db.DB.Model(&model.YomeEvent{}).
+		Where("server_id = ? AND requester_id IS NOT NULL AND requester_id != ''", serverID).
+		Select("COUNT(DISTINCT requester_id)").
+		Count(&count).Error; err != nil {
+		return stats, errors.Wrap(err, "failed to count unique yome requesters")
+	}
+	stats.UniqueRequesters = count
+	return stats, nil
+}
+
+// GetYomeRanking returns the top requesters by how often they made the bot yome.
+func GetYomeRanking(serverID string) ([]RankResult, error) {
+	metrics.RecordDatabaseOperation("get_yome_ranking")
+
+	var ranks []RankResult
+	if err := db.DB.Model(&model.YomeEvent{}).
+		Where("server_id = ? AND requester_id IS NOT NULL AND requester_id != ''", serverID).
+		Group("requester_id").
+		Select("COUNT(*) AS count, requester_id AS author_id").
+		Order("count DESC").
+		Scan(&ranks).Error; err != nil {
+		metrics.RecordError("database")
+		logger.Warn("Failed to get yome ranking",
+			"error", err,
+			"server_id", serverID,
+		)
+		return nil, errors.Wrap(err, "failed to get yome ranking")
+	}
+
+	var results []RankResult
+	var before RankResult
+	for i, rank := range ranks {
+		if rank.Count == before.Count {
+			rank.Rank = before.Rank
+		} else {
+			rank.Rank = i + 1
+		}
+		if rank.Rank > 5 {
+			break
+		}
+		results = append(results, rank)
+		before = rank
+	}
+	return results, nil
+}
+
 // FormatYomeText joins stored phrases for display.
 func FormatYomeText(e model.YomeEvent) string {
 	parts := make([]string, 0, 5)

@@ -819,6 +819,15 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		logger.Warn("Failed to get server stats", "error", statsErr, "guild_id", i.GuildID)
 	}
 
+	yomeRanks, yomeRankErr := service.GetYomeRanking(i.GuildID)
+	if yomeRankErr != nil {
+		logger.Warn("Failed to get yome ranking", "error", yomeRankErr, "guild_id", i.GuildID)
+	}
+	yomeStats, yomeStatsErr := service.GetYomeStats(i.GuildID)
+	if yomeStatsErr != nil {
+		logger.Warn("Failed to get yome stats", "error", yomeStatsErr, "guild_id", i.GuildID)
+	}
+
 	guild, err := s.State.Guild(i.GuildID)
 	if err != nil {
 		guild, err = s.Guild(i.GuildID)
@@ -861,6 +870,30 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			Value:  displayName,
 			Inline: true,
 		})
+	}
+
+	yomeSummary := "まだ誰も詠ませていません"
+	if yomeStatsErr == nil && yomeStats.TotalYomes > 0 {
+		yomeSummary = fmt.Sprintf("累計 **%d** 回 / **%d** 人の詠ませ手", yomeStats.TotalYomes, yomeStats.UniqueRequesters)
+	}
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+		Name:   "詠ませランキング",
+		Value:  yomeSummary,
+		Inline: false,
+	})
+	if yomeRankErr == nil {
+		for _, rank := range yomeRanks {
+			member, err := s.GuildMember(i.GuildID, rank.AuthorId)
+			if err != nil {
+				continue
+			}
+			displayName := resolveDisplayName(member)
+			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+				Name:   fmt.Sprintf("%s 第%d位: %d回", medals[rank.Rank-1], rank.Rank, rank.Count),
+				Value:  displayName,
+				Inline: true,
+			})
+		}
 	}
 
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -1014,7 +1047,7 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 			return true
 		}
 		for i := 0; i < count; i++ {
-			if err := sendRandomTanka(s, m.ChannelID, m.GuildID, m.ID); err != nil {
+			if err := sendRandomTanka(s, m.ChannelID, m.GuildID, m.ID, m.Author.ID); err != nil {
 				return true
 			}
 		}
@@ -1070,7 +1103,7 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 			logger.Warn("Failed to send duration ack", "error", err, "channel_id", m.ChannelID)
 			return true
 		}
-		go runDurationYome(s, m.ChannelID, m.GuildID, m.ID, req.DurationSec)
+		go runDurationYome(s, m.ChannelID, m.GuildID, m.ID, m.Author.ID, req.DurationSec)
 		return true
 
 	case yomeScheduled:
@@ -1086,7 +1119,7 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 
 	default: // yomeImmediate
 		for i := 0; i < req.Count; i++ {
-			if err := sendRandomSenryu(s, m.ChannelID, m.GuildID, m.ID); err != nil {
+			if err := sendRandomSenryu(s, m.ChannelID, m.GuildID, m.ID, m.Author.ID); err != nil {
 				return true
 			}
 		}
@@ -1096,7 +1129,7 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 
 // sendRandomTanka composes and sends a tanka from random senryu phrases.
 // reactionMessageID is used for ❌ reactions on failure (the user's command message).
-func sendRandomTanka(s *discordgo.Session, channelID, guildID, reactionMessageID string) error {
+func sendRandomTanka(s *discordgo.Session, channelID, guildID, reactionMessageID, requesterID string) error {
 	senryus, err := service.GetThreeRandomSenryus(guildID)
 	if err != nil {
 		logger.Error("Failed to get random senryus for tanka", "error", err)
@@ -1140,15 +1173,16 @@ func sendRandomTanka(s *discordgo.Session, channelID, guildID, reactionMessageID
 		return err
 	}
 	if err := service.RecordYome(model.YomeEvent{
-		ServerID:  guildID,
-		ChannelID: channelID,
-		MessageID: msg.ID,
-		Kind:      model.YomeKindTanka,
-		Kamigo:    phrases[0],
-		Nakasichi: phrases[1],
-		Simogo:    phrases[2],
-		Nanaichi:  phrases[3],
-		Nananichi: phrases[4],
+		ServerID:    guildID,
+		ChannelID:   channelID,
+		MessageID:   msg.ID,
+		RequesterID: requesterID,
+		Kind:        model.YomeKindTanka,
+		Kamigo:      phrases[0],
+		Nakasichi:   phrases[1],
+		Simogo:      phrases[2],
+		Nanaichi:    phrases[3],
+		Nananichi:   phrases[4],
 	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", guildID)
 	}
@@ -1325,15 +1359,16 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 		return
 	}
 	if err := service.RecordYome(model.YomeEvent{
-		ServerID:  r.GuildID,
-		ChannelID: r.ChannelID,
-		MessageID: msgOut.ID,
-		Kind:      model.YomeKindTanka,
-		Kamigo:    phrases[0],
-		Nakasichi: phrases[1],
-		Simogo:    phrases[2],
-		Nanaichi:  phrases[3],
-		Nananichi: phrases[4],
+		ServerID:    r.GuildID,
+		ChannelID:   r.ChannelID,
+		MessageID:   msgOut.ID,
+		RequesterID: r.UserID,
+		Kind:        model.YomeKindTanka,
+		Kamigo:      phrases[0],
+		Nakasichi:   phrases[1],
+		Simogo:      phrases[2],
+		Nanaichi:    phrases[3],
+		Nananichi:   phrases[4],
 	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", r.GuildID)
 	}

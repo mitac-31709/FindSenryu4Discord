@@ -243,7 +243,7 @@ func formatScheduledYomeAck(req yomeRequest) string {
 
 // sendRandomSenryu composes and sends one random senryu.
 // reactionMessageID is used for ❌ reactions on failure (may be empty).
-func sendRandomSenryu(s *discordgo.Session, channelID, guildID, reactionMessageID string) error {
+func sendRandomSenryu(s *discordgo.Session, channelID, guildID, reactionMessageID, requesterID string) error {
 	senryus, err := service.GetThreeRandomSenryus(guildID)
 	if err != nil {
 		logger.Error("Failed to get random senryus", "error", err)
@@ -275,13 +275,14 @@ func sendRandomSenryu(s *discordgo.Session, channelID, guildID, reactionMessageI
 		return err
 	}
 	if err := service.RecordYome(model.YomeEvent{
-		ServerID:  guildID,
-		ChannelID: channelID,
-		MessageID: msg.ID,
-		Kind:      model.YomeKindSenryu,
-		Kamigo:    senryus[0].Kamigo,
-		Nakasichi: senryus[1].Nakasichi,
-		Simogo:    senryus[2].Simogo,
+		ServerID:    guildID,
+		ChannelID:   channelID,
+		MessageID:   msg.ID,
+		RequesterID: requesterID,
+		Kind:        model.YomeKindSenryu,
+		Kamigo:      senryus[0].Kamigo,
+		Nakasichi:   senryus[1].Nakasichi,
+		Simogo:      senryus[2].Simogo,
 	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", guildID)
 	}
@@ -298,11 +299,11 @@ func unlockDurationYome(channelID string) {
 }
 
 // runDurationYome posts senryu at max Discord rate until deadline.
-func runDurationYome(s *discordgo.Session, channelID, guildID, reactionMessageID string, durationSec int) {
+func runDurationYome(s *discordgo.Session, channelID, guildID, reactionMessageID, requesterID string, durationSec int) {
 	defer unlockDurationYome(channelID)
 	deadline := time.Now().Add(time.Duration(durationSec) * time.Second)
 	for time.Now().Before(deadline) {
-		if err := sendRandomSenryu(s, channelID, guildID, reactionMessageID); err != nil {
+		if err := sendRandomSenryu(s, channelID, guildID, reactionMessageID, requesterID); err != nil {
 			return
 		}
 	}

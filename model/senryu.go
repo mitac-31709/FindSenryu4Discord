@@ -54,6 +54,7 @@ type YomeEvent struct {
 	ServerID      string    `gorm:"column:server_id;index"`
 	ChannelID     string    `gorm:"column:channel_id"`
 	MessageID     string    `gorm:"column:message_id"`
+	RequesterID   string    `gorm:"column:requester_id;index"`
 	Kind          string    `gorm:"column:kind"`
 	Kamigo        string    `gorm:"column:kamigo"`
 	Nakasichi     string    `gorm:"column:nakasichi"`

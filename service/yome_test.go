@@ -251,6 +251,41 @@ func TestParseYomeBotMessage(t *testing.T) {
 	}
 }
 
+func TestGetYomeRanking_requester別集計(t *testing.T) {
+	setupYomeTestDB(t)
+
+	for i := 0; i < 3; i++ {
+		_ = RecordYome(model.YomeEvent{
+			ServerID: "g1", MessageID: fmt.Sprintf("a%d", i), RequesterID: "user-a",
+			Kind: model.YomeKindSenryu, Kamigo: "あ", Nakasichi: "い", Simogo: "う",
+		})
+	}
+	_ = RecordYome(model.YomeEvent{
+		ServerID: "g1", MessageID: "b1", RequesterID: "user-b",
+		Kind: model.YomeKindSenryu, Kamigo: "あ", Nakasichi: "い", Simogo: "う",
+	})
+	_ = RecordYome(model.YomeEvent{
+		ServerID: "g1", MessageID: "c1", // no requester
+		Kind: model.YomeKindSenryu, Kamigo: "あ", Nakasichi: "い", Simogo: "う",
+	})
+
+	ranks, err := GetYomeRanking("g1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranks) < 1 || ranks[0].AuthorId != "user-a" || ranks[0].Count != 3 {
+		t.Fatalf("ranks = %+v", ranks)
+	}
+
+	stats, err := GetYomeStats("g1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalYomes != 5 || stats.UniqueRequesters != 2 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
 func TestExistsByYomeMessageID(t *testing.T) {
 	setupYomeTestDB(t)
 	_ = RecordYome(model.YomeEvent{

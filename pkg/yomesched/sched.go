@@ -10,7 +10,7 @@ import (
 )
 
 // SendFunc posts one random senryu. reactionMessageID may be empty.
-type SendFunc func(s *discordgo.Session, channelID, guildID, reactionMessageID string) error
+type SendFunc func(s *discordgo.Session, channelID, guildID, reactionMessageID, requesterID string) error
 
 // Manager polls for due scheduled yomes and posts them.
 type Manager struct {
@@ -75,11 +75,11 @@ func (m *Manager) tick() {
 		return
 	}
 	for _, yome := range due {
-		m.fire(yome.ID, yome.GuildID, yome.ChannelID, yome.Count)
+		m.fire(yome.ID, yome.GuildID, yome.ChannelID, yome.RequesterID, yome.Count)
 	}
 }
 
-func (m *Manager) fire(id int, guildID, channelID string, count int) {
+func (m *Manager) fire(id int, guildID, channelID, requesterID string, count int) {
 	claimed, err := service.ClaimScheduledYomeDone(id)
 	if err != nil {
 		logger.Warn("Failed to claim scheduled yome", "error", err, "id", id)
@@ -92,7 +92,7 @@ func (m *Manager) fire(id int, guildID, channelID string, count int) {
 		count = 1
 	}
 	for i := 0; i < count; i++ {
-		if err := m.send(m.session, channelID, guildID, ""); err != nil {
+		if err := m.send(m.session, channelID, guildID, "", requesterID); err != nil {
 			logger.Warn("Failed to send scheduled yome",
 				"error", err,
 				"id", id,
