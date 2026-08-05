@@ -296,6 +296,7 @@ func GetYomeRanking(serverID string) ([]RankResult, error) {
 		Group("requester_id").
 		Select("COUNT(*) AS count, requester_id AS author_id").
 		Order("count DESC").
+		Limit(50).
 		Scan(&ranks).Error; err != nil {
 		metrics.RecordError("database")
 		logger.Warn("Failed to get yome ranking",

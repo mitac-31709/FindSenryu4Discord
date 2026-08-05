@@ -285,6 +285,7 @@ func GetRanking(serverID string) ([]RankResult, error) {
 		Group("author_id").
 		Select("COUNT(TRUE) AS count, author_id").
 		Order("count DESC").
+		Limit(50).
 		Scan(&ranks).Error; err != nil {
 		metrics.RecordError("database")
 		logger.Warn("Failed to get ranking",

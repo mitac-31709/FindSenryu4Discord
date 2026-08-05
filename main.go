@@ -801,16 +801,23 @@ var medals = []string{"🥇", "🥈", "🥉", "🎖️", "🎖️"}
 func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	metrics.RecordCommandExecuted("rank")
 
+	// Defer immediately: DB aggregates + GuildMember lookups can exceed Discord's 3s ACK.
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	}); err != nil {
+		logger.Error("Failed to defer rank response", "error", err, "guild_id", i.GuildID)
+		return
+	}
+
 	ranks, err := service.GetRanking(i.GuildID)
 	if err != nil {
 		logger.Error("Failed to get ranking", "error", err, "guild_id", i.GuildID)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "ランキングの取得に失敗しました",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
+		msg := "ランキングの取得に失敗しました"
+		if _, editErr := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: &msg,
+		}); editErr != nil {
+			logger.Error("Failed to edit rank error response", "error", editErr, "guild_id", i.GuildID)
+		}
 		return
 	}
 
@@ -860,7 +867,7 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	for _, rank := range ranks {
-		member, err := s.GuildMember(i.GuildID, rank.AuthorId)
+		member, err := resolveGuildMember(s, i.GuildID, rank.AuthorId)
 		if err != nil {
 			continue
 		}
@@ -883,7 +890,7 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	})
 	if yomeRankErr == nil {
 		for _, rank := range yomeRanks {
-			member, err := s.GuildMember(i.GuildID, rank.AuthorId)
+			member, err := resolveGuildMember(s, i.GuildID, rank.AuthorId)
 			if err != nil {
 				continue
 			}
@@ -896,12 +903,11 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Embeds: []*discordgo.MessageEmbed{&embed},
-		},
-	})
+	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Embeds: &[]*discordgo.MessageEmbed{&embed},
+	}); err != nil {
+		logger.Error("Failed to edit rank response", "error", err, "guild_id", i.GuildID)
+	}
 }
 
 const yondeteDouTopN = 5
@@ -1385,6 +1391,17 @@ func messageReactionRemove(s *discordgo.Session, r *discordgo.MessageReactionRem
 		logger.Warn("Failed to adjust yome reaction count on remove",
 			"error", err, "message_id", r.MessageID)
 	}
+}
+
+// resolveGuildMember returns a guild member from state cache when possible,
+// falling back to the Discord API.
+func resolveGuildMember(s *discordgo.Session, guildID, userID string) (*discordgo.Member, error) {
+	if s.State != nil {
+		if m, err := s.State.Member(guildID, userID); err == nil && m != nil {
+			return m, nil
+		}
+	}
+	return s.GuildMember(guildID, userID)
 }
 
 // resolveDisplayName returns the best display name for a guild member,
