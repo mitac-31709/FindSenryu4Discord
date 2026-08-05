@@ -245,11 +245,12 @@ func TestIsImportableMessageChannel(t *testing.T) {
 	}{
 		{discordgo.ChannelTypeGuildText, true},
 		{discordgo.ChannelTypeGuildNews, true},
+		{discordgo.ChannelTypeGuildVoice, true},
+		{discordgo.ChannelTypeGuildStageVoice, true},
 		{discordgo.ChannelTypeGuildPublicThread, true},
 		{discordgo.ChannelTypeGuildPrivateThread, true},
 		{discordgo.ChannelTypeGuildNewsThread, true},
 		{discordgo.ChannelTypeGuildForum, false},
-		{discordgo.ChannelTypeGuildVoice, false},
 		{discordgo.ChannelTypeGuildCategory, false},
 	}
 	for _, tt := range tests {

@@ -134,6 +134,8 @@ func isImportableMessageChannel(ch *discordgo.Channel) bool {
 	switch ch.Type {
 	case discordgo.ChannelTypeGuildText,
 		discordgo.ChannelTypeGuildNews,
+		discordgo.ChannelTypeGuildVoice,
+		discordgo.ChannelTypeGuildStageVoice,
 		discordgo.ChannelTypeGuildPublicThread,
 		discordgo.ChannelTypeGuildPrivateThread,
 		discordgo.ChannelTypeGuildNewsThread:
@@ -193,7 +195,8 @@ func listGuildImportChannels(s *discordgo.Session, guildID string) ([]*discordgo
 }
 
 // ImportGuildHistory imports message history from all importable channels in a guild.
-// opts.Limit applies per channel. Forum parent channels are skipped; active threads are included.
+// opts.Limit applies per channel. Includes text/news/voice/stage chats and active threads.
+// Forum parent channels are skipped (their active threads are included when listed).
 func ImportGuildHistory(s *discordgo.Session, opts ImportOptions) (ImportResult, error) {
 	var result ImportResult
 	if opts.GuildID == "" {
