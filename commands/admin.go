@@ -87,6 +87,12 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 							},
 						},
 						{
+							Name:        "overwrite",
+							Description: "既存レコードがあれば上書きする（reaction / requester 等を更新）",
+							Type:        discordgo.ApplicationCommandOptionBoolean,
+							Required:    false,
+						},
+						{
 							Name:        "dry_run",
 							Description: "実際には保存せず件数だけ確認する",
 							Type:        discordgo.ApplicationCommandOptionBoolean,
@@ -173,6 +179,7 @@ func floatPtr(v float64) *float64 { return &v }
 func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, options []*discordgo.ApplicationCommandInteractionDataOption) {
 	var channelID string
 	var dryRun bool
+	var overwrite bool
 	var limit int
 	kind := service.ImportKindDetection
 
@@ -182,6 +189,8 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 			channelID = strings.TrimSpace(opt.StringValue())
 		case "kind":
 			kind = strings.TrimSpace(opt.StringValue())
+		case "overwrite":
+			overwrite = opt.BoolValue()
 		case "dry_run":
 			dryRun = opt.BoolValue()
 		case "limit":
@@ -223,6 +232,7 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		ChannelID:    channelID,
 		SourceBotIDs: sourceBotIDs,
 		DryRun:       dryRun,
+		Overwrite:    overwrite,
 		Limit:        limit,
 		Kind:         kind,
 	})
@@ -241,9 +251,11 @@ func handleImportCommand(s *discordgo.Session, i *discordgo.InteractionCreate, o
 
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "Kind", Value: kind, Inline: true},
+		{Name: "Overwrite", Value: fmt.Sprintf("%v", overwrite), Inline: true},
 		{Name: "Scanned", Value: fmt.Sprintf("%d", result.Scanned), Inline: true},
 		{Name: "Matched", Value: fmt.Sprintf("%d", result.Matched), Inline: true},
 		{Name: "Imported", Value: fmt.Sprintf("%d", result.Imported), Inline: true},
+		{Name: "Updated", Value: fmt.Sprintf("%d", result.Updated), Inline: true},
 		{Name: "Skipped (duplicate)", Value: fmt.Sprintf("%d", result.SkippedDuplicate), Inline: true},
 		{Name: "Errors", Value: fmt.Sprintf("%d", result.Errors), Inline: true},
 	}

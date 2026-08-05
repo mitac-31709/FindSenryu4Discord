@@ -125,6 +125,41 @@ func ExistsBySourceMessageID(sourceMessageID string) (bool, error) {
 	return count > 0, nil
 }
 
+// UpdateSenryuBySourceMessageID updates an existing senryu identified by source_message_id.
+func UpdateSenryuBySourceMessageID(s model.Senryu) error {
+	if s.SourceMessageID == "" {
+		return errors.New("source_message_id is required")
+	}
+	metrics.RecordDatabaseOperation("update_senryu_by_source_message_id")
+
+	dbRecord := s
+	if err := encryptSenryuFields(&dbRecord); err != nil {
+		logger.Error("Failed to encrypt senryu for update", "error", err)
+		return err
+	}
+
+	updates := map[string]interface{}{
+		"server_id":  dbRecord.ServerID,
+		"author_id":  dbRecord.AuthorID,
+		"kamigo":     dbRecord.Kamigo,
+		"nakasichi":  dbRecord.Nakasichi,
+		"simogo":     dbRecord.Simogo,
+		"spoiler":    dbRecord.Spoiler,
+		"created_at": dbRecord.CreatedAt,
+	}
+	if err := db.DB.Model(&model.Senryu{}).
+		Where("source_message_id = ?", s.SourceMessageID).
+		Updates(updates).Error; err != nil {
+		metrics.RecordError("database")
+		logger.Warn("Failed to update senryu by source_message_id",
+			"error", err,
+			"source_message_id", s.SourceMessageID,
+		)
+		return errors.Wrap(err, "failed to update senryu by source_message_id")
+	}
+	return nil
+}
+
 // GetLastSenryu returns the last senryu in a server
 func GetLastSenryu(serverID string) (*model.Senryu, error) {
 	metrics.RecordDatabaseOperation("get_last_senryu")

@@ -48,6 +48,39 @@ func ExistsByYomeMessageID(messageID string) (bool, error) {
 	return count > 0, nil
 }
 
+// UpdateYomeByMessageID updates an existing yome event identified by Discord message ID.
+func UpdateYomeByMessageID(event model.YomeEvent) error {
+	if event.MessageID == "" {
+		return errors.New("message_id is required")
+	}
+	metrics.RecordDatabaseOperation("update_yome_by_message_id")
+
+	updates := map[string]interface{}{
+		"server_id":      event.ServerID,
+		"channel_id":     event.ChannelID,
+		"requester_id":   event.RequesterID,
+		"kind":           event.Kind,
+		"kamigo":         event.Kamigo,
+		"nakasichi":      event.Nakasichi,
+		"simogo":         event.Simogo,
+		"nanaichi":       event.Nanaichi,
+		"nananichi":      event.Nananichi,
+		"reaction_count": event.ReactionCount,
+		"created_at":     event.CreatedAt,
+	}
+	if err := db.DB.Model(&model.YomeEvent{}).
+		Where("message_id = ?", event.MessageID).
+		Updates(updates).Error; err != nil {
+		metrics.RecordError("database")
+		logger.Warn("Failed to update yome by message_id",
+			"error", err,
+			"message_id", event.MessageID,
+		)
+		return errors.Wrap(err, "failed to update yome by message_id")
+	}
+	return nil
+}
+
 // AdjustYomeReactionCount adds delta to reaction_count for the yome with the given message ID.
 // No-op when no matching row exists. Count will not go below zero.
 func AdjustYomeReactionCount(messageID string, delta int) error {

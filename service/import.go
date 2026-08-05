@@ -70,6 +70,7 @@ type ImportResult struct {
 	Scanned          int
 	Matched          int
 	Imported         int
+	Updated          int
 	SkippedDuplicate int
 	SkippedNoParent  int
 	Errors           int
@@ -81,6 +82,7 @@ type ImportOptions struct {
 	ChannelID    string
 	SourceBotIDs []string
 	DryRun       bool
+	Overwrite    bool   // update existing rows instead of skipping duplicates
 	Limit        int    // max messages to scan (0 = default)
 	Kind         string // "detection" (default) or "yome"
 }
@@ -181,7 +183,7 @@ func importDetectionChannelHistory(s *discordgo.Session, opts ImportOptions) (Im
 				logger.Warn("Import: failed to check duplicate", "error", err, "message_id", msg.ID)
 				continue
 			}
-			if exists {
+			if exists && !opts.Overwrite {
 				result.SkippedDuplicate++
 				continue
 			}
@@ -225,21 +227,38 @@ func importDetectionChannelHistory(s *discordgo.Session, opts ImportOptions) (Im
 			}
 
 			if opts.DryRun {
-				result.Imported++
+				if exists {
+					result.Updated++
+				} else {
+					result.Imported++
+				}
 				time.Sleep(importMessageDelay)
 				continue
 			}
 
-			if _, err := CreateSenryu(senryu); err != nil {
-				result.Errors++
-				logger.Warn("Import: failed to create senryu",
-					"error", err,
-					"message_id", msg.ID,
-					"author_id", parent.Author.ID,
-				)
-				continue
+			if exists {
+				if err := UpdateSenryuBySourceMessageID(senryu); err != nil {
+					result.Errors++
+					logger.Warn("Import: failed to update senryu",
+						"error", err,
+						"message_id", msg.ID,
+						"author_id", parent.Author.ID,
+					)
+					continue
+				}
+				result.Updated++
+			} else {
+				if _, err := CreateSenryu(senryu); err != nil {
+					result.Errors++
+					logger.Warn("Import: failed to create senryu",
+						"error", err,
+						"message_id", msg.ID,
+						"author_id", parent.Author.ID,
+					)
+					continue
+				}
+				result.Imported++
 			}
-			result.Imported++
 			time.Sleep(importMessageDelay)
 		}
 
@@ -254,9 +273,11 @@ func importDetectionChannelHistory(s *discordgo.Session, opts ImportOptions) (Im
 		"guild_id", guildID,
 		"kind", ImportKindDetection,
 		"dry_run", opts.DryRun,
+		"overwrite", opts.Overwrite,
 		"scanned", result.Scanned,
 		"matched", result.Matched,
 		"imported", result.Imported,
+		"updated", result.Updated,
 		"skipped_duplicate", result.SkippedDuplicate,
 		"skipped_no_parent", result.SkippedNoParent,
 		"errors", result.Errors,
@@ -274,6 +295,61 @@ func sumMessageReactions(msg *discordgo.Message) int {
 		total += r.Count
 	}
 	return total
+}
+
+func looksLikeYomeTrigger(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+	if content == "詠め" || content == "短歌を詠め" {
+		return true
+	}
+	if strings.HasSuffix(content, "回詠め") || strings.HasSuffix(content, "回短歌を詠め") {
+		return true
+	}
+	if strings.HasSuffix(content, "秒間詠め") {
+		return true
+	}
+	if strings.Contains(content, "に") && strings.HasSuffix(content, "詠め") {
+		return true
+	}
+	if strings.Contains(content, "後に") && strings.Contains(content, "詠め") {
+		return true
+	}
+	return false
+}
+
+// resolveYomeRequesterID finds who triggered a bot yome message.
+// Prefers MessageReference parent author; otherwise scans a few older messages for a yome command.
+func resolveYomeRequesterID(s *discordgo.Session, channelID string, msg *discordgo.Message, sourceBotIDs []string) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.MessageReference != nil && msg.MessageReference.MessageID != "" {
+		parent, err := s.ChannelMessage(channelID, msg.MessageReference.MessageID)
+		if err == nil && parent.Author != nil && !isSourceBot(parent.Author.ID, sourceBotIDs) {
+			return parent.Author.ID
+		}
+		time.Sleep(importMessageDelay)
+	}
+
+	older, err := s.ChannelMessages(channelID, 5, msg.ID, "", "")
+	if err != nil {
+		logger.Debug("Import yome: failed to fetch older messages for requester",
+			"error", err, "message_id", msg.ID)
+		return ""
+	}
+	time.Sleep(importMessageDelay)
+	for _, m := range older {
+		if m.Author == nil || isSourceBot(m.Author.ID, sourceBotIDs) {
+			continue
+		}
+		if looksLikeYomeTrigger(m.Content) {
+			return m.Author.ID
+		}
+	}
+	return ""
 }
 
 // ImportYomeChannelHistory scans a channel for past bot yome messages and imports them.
@@ -337,7 +413,7 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 				logger.Warn("Import yome: failed to check duplicate", "error", err, "message_id", msg.ID)
 				continue
 			}
-			if exists {
+			if exists && !opts.Overwrite {
 				result.SkippedDuplicate++
 				continue
 			}
@@ -346,6 +422,7 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 				ServerID:      guildID,
 				ChannelID:     opts.ChannelID,
 				MessageID:     msg.ID,
+				RequesterID:   resolveYomeRequesterID(s, opts.ChannelID, msg, opts.SourceBotIDs),
 				Kind:          parsed.Kind,
 				Kamigo:        parsed.Kamigo,
 				Nakasichi:     parsed.Nakasichi,
@@ -357,20 +434,36 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 			}
 
 			if opts.DryRun {
-				result.Imported++
+				if exists {
+					result.Updated++
+				} else {
+					result.Imported++
+				}
 				time.Sleep(importMessageDelay)
 				continue
 			}
 
-			if err := RecordYome(event); err != nil {
-				result.Errors++
-				logger.Warn("Import yome: failed to record",
-					"error", err,
-					"message_id", msg.ID,
-				)
-				continue
+			if exists {
+				if err := UpdateYomeByMessageID(event); err != nil {
+					result.Errors++
+					logger.Warn("Import yome: failed to update",
+						"error", err,
+						"message_id", msg.ID,
+					)
+					continue
+				}
+				result.Updated++
+			} else {
+				if err := RecordYome(event); err != nil {
+					result.Errors++
+					logger.Warn("Import yome: failed to record",
+						"error", err,
+						"message_id", msg.ID,
+					)
+					continue
+				}
+				result.Imported++
 			}
-			result.Imported++
 			time.Sleep(importMessageDelay)
 		}
 
@@ -385,9 +478,11 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 		"guild_id", guildID,
 		"kind", ImportKindYome,
 		"dry_run", opts.DryRun,
+		"overwrite", opts.Overwrite,
 		"scanned", result.Scanned,
 		"matched", result.Matched,
 		"imported", result.Imported,
+		"updated", result.Updated,
 		"skipped_duplicate", result.SkippedDuplicate,
 		"errors", result.Errors,
 	)

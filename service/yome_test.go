@@ -286,6 +286,32 @@ func TestGetYomeRanking_requester別集計(t *testing.T) {
 	}
 }
 
+func TestUpdateYomeByMessageID(t *testing.T) {
+	setupYomeTestDB(t)
+
+	if err := RecordYome(model.YomeEvent{
+		ServerID: "g1", MessageID: "m1", Kind: model.YomeKindSenryu,
+		Kamigo: "旧", Nakasichi: "い", Simogo: "う", ReactionCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateYomeByMessageID(model.YomeEvent{
+		ServerID: "g1", ChannelID: "ch", MessageID: "m1", RequesterID: "user1",
+		Kind: model.YomeKindSenryu, Kamigo: "新", Nakasichi: "い", Simogo: "う",
+		ReactionCount: 9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var event model.YomeEvent
+	if err := db.DB.Where("message_id = ?", "m1").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.Kamigo != "新" || event.RequesterID != "user1" || event.ReactionCount != 9 {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
 func TestExistsByYomeMessageID(t *testing.T) {
 	setupYomeTestDB(t)
 	_ = RecordYome(model.YomeEvent{

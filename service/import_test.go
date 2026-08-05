@@ -82,6 +82,28 @@ func TestParseDetectionReply(t *testing.T) {
 	}
 }
 
+func TestLooksLikeYomeTrigger(t *testing.T) {
+	tests := []struct {
+		content string
+		want    bool
+	}{
+		{"詠め", true},
+		{"短歌を詠め", true},
+		{"3回詠め", true},
+		{"2回短歌を詠め", true},
+		{"10秒間詠め", true},
+		{"3分後に詠め", true},
+		{"ここで一句\n「あ い う」", false},
+		{"川柳を検出しました！", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := looksLikeYomeTrigger(tt.content); got != tt.want {
+			t.Errorf("looksLikeYomeTrigger(%q) = %v, want %v", tt.content, got, tt.want)
+		}
+	}
+}
+
 func TestResolveImportLimit(t *testing.T) {
 	if got := resolveImportLimit(0); got != defaultImportLimit {
 		t.Errorf("0 -> %d, want %d", got, defaultImportLimit)
