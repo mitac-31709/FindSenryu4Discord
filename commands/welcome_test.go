@@ -31,6 +31,9 @@ func TestBuildWelcomeEmbed_フィールド構成(t *testing.T) {
 			t.Errorf("field[%d].Value should not be empty", i)
 		}
 	}
+	if !containsString(embed.Fields[1].Value, "詠んでてどう？") {
+		t.Error("yome field should mention 詠んでてどう？")
+	}
 }
 
 func TestBuildWelcomeEmbed_コマンド一覧を含む(t *testing.T) {

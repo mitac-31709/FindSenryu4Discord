@@ -453,3 +453,27 @@ func TestIsTankaReaction(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatPhraseRanks(t *testing.T) {
+	if got := formatPhraseRanks(nil); got != "（なし）" {
+		t.Errorf("empty = %q", got)
+	}
+	got := formatPhraseRanks([]service.PhraseRank{{Phrase: "古池や", Count: 3}})
+	want := "1. 「古池や」 — 3回"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestFormatReactionRanks(t *testing.T) {
+	if got := formatReactionRanks(nil); got != "（なし）" {
+		t.Errorf("empty = %q", got)
+	}
+	got := formatReactionRanks([]model.YomeEvent{{
+		Kamigo: "あ", Nakasichi: "い", Simogo: "う", ReactionCount: 7,
+	}})
+	want := "1. 「あ い う」 — 7"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

@@ -284,6 +284,7 @@ func main() {
 
 		s.AddHandler(messageCreate)
 		s.AddHandler(messageReactionAdd)
+		s.AddHandler(messageReactionRemove)
 		s.AddHandler(interactionCreate)
 		s.AddHandler(guildCreate)
 		s.AddHandler(guildDelete)
@@ -870,7 +871,95 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	})
 }
 
+const yondeteDouTopN = 5
+
+func handleYondeteDou(m *discordgo.MessageCreate, s *discordgo.Session) {
+	embed, err := buildYondeteDouEmbed(m.GuildID)
+	if err != nil {
+		logger.Error("Failed to build 詠んでてどう？ summary", "error", err, "guild_id", m.GuildID)
+		s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
+		return
+	}
+	if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+		Embed:     embed,
+		Reference: m.Reference(),
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse: []discordgo.AllowedMentionType{},
+		},
+	}); err != nil {
+		logger.Warn("Failed to send 詠んでてどう？ reply", "error", err, "channel_id", m.ChannelID)
+	}
+}
+
+func buildYondeteDouEmbed(guildID string) (*discordgo.MessageEmbed, error) {
+	kamigo, err := service.TopYomePhrases(guildID, "kamigo", yondeteDouTopN)
+	if err != nil {
+		return nil, err
+	}
+	nakasichi, err := service.TopYomePhrases(guildID, "nakasichi", yondeteDouTopN)
+	if err != nil {
+		return nil, err
+	}
+	simogo, err := service.TopYomePhrases(guildID, "simogo", yondeteDouTopN)
+	if err != nil {
+		return nil, err
+	}
+	byReaction, err := service.TopYomeByReaction(guildID, yondeteDouTopN)
+	if err != nil {
+		return nil, err
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Type:      discordgo.EmbedTypeRich,
+		Title:     "詠んでてどう？",
+		Timestamp: time.Now().Format(time.RFC3339),
+		Color:     0x5865F2,
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "上の句 TOP", Value: formatPhraseRanks(kamigo), Inline: false},
+			{Name: "中の句 TOP", Value: formatPhraseRanks(nakasichi), Inline: false},
+			{Name: "下の句 TOP", Value: formatPhraseRanks(simogo), Inline: false},
+			{Name: "リアクション TOP", Value: formatReactionRanks(byReaction), Inline: false},
+		},
+	}
+	if len(kamigo) == 0 && len(nakasichi) == 0 && len(simogo) == 0 && len(byReaction) == 0 {
+		embed.Description = "まだ詠んだ記録がありません。「詠め」で一句詠んでみよう。"
+	}
+	return embed, nil
+}
+
+func formatPhraseRanks(ranks []service.PhraseRank) string {
+	if len(ranks) == 0 {
+		return "（なし）"
+	}
+	var b strings.Builder
+	for i, r := range ranks {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%d. 「%s」 — %d回", i+1, r.Phrase, r.Count)
+	}
+	return b.String()
+}
+
+func formatReactionRanks(events []model.YomeEvent) string {
+	if len(events) == 0 {
+		return "（なし）"
+	}
+	var b strings.Builder
+	for i, e := range events {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%d. 「%s」 — %d", i+1, service.FormatYomeText(e), e.ReactionCount)
+	}
+	return b.String()
+}
+
 func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
+	if m.Content == "詠んでてどう？" {
+		handleYondeteDou(m, s)
+		return true
+	}
 	if m.Content == "詠むな" {
 		senryu, err := service.GetLastSenryu(m.GuildID)
 		if err != nil {
@@ -1039,17 +1128,28 @@ func sendRandomTanka(s *discordgo.Session, channelID, guildID, reactionMessageID
 	}
 	all := append(senryus, extra...)
 	content := buildTankaMessage(phrases, strings.Join(getWriters(all, guildID, s), ", "))
-	if _, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 		Content: content,
 		AllowedMentions: &discordgo.MessageAllowedMentions{
 			Parse: []discordgo.AllowedMentionType{},
 		},
 		Flags: discordgo.MessageFlagsSuppressEmbeds,
-	}); err != nil {
+	})
+	if err != nil {
 		logger.Warn("Failed to send tanka message", "error", err, "channel_id", channelID)
 		return err
 	}
-	if err := service.RecordYome(guildID); err != nil {
+	if err := service.RecordYome(model.YomeEvent{
+		ServerID:  guildID,
+		ChannelID: channelID,
+		MessageID: msg.ID,
+		Kind:      model.YomeKindTanka,
+		Kamigo:    phrases[0],
+		Nakasichi: phrases[1],
+		Simogo:    phrases[2],
+		Nanaichi:  phrases[3],
+		Nananichi: phrases[4],
+	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", guildID)
 	}
 	return nil
@@ -1108,30 +1208,11 @@ func parseTankaYomeCount(content string, max int) (count int, ok bool, outOfRang
 
 // parseYomeMessage parses a bot 「詠め」 reply (ここで一句 with exactly 3 phrases).
 func parseYomeMessage(content string) (phrases []string, writers string, ok bool) {
-	const prefix = "ここで一句\n"
-	if !strings.HasPrefix(content, prefix) {
+	parsed, ok := service.ParseYomeBotMessage(content)
+	if !ok || parsed.Kind != model.YomeKindSenryu {
 		return nil, "", false
 	}
-	rest := strings.TrimPrefix(content, prefix)
-	lines := strings.SplitN(rest, "\n", 2)
-	phraseLine := lines[0]
-	if !strings.HasPrefix(phraseLine, "「") || !strings.HasSuffix(phraseLine, "」") {
-		return nil, "", false
-	}
-	inner := strings.TrimSuffix(strings.TrimPrefix(phraseLine, "「"), "」")
-	phrases = strings.Split(inner, " ")
-	if len(phrases) != 3 {
-		return nil, "", false
-	}
-	for _, p := range phrases {
-		if p == "" {
-			return nil, "", false
-		}
-	}
-	if len(lines) >= 2 && strings.HasPrefix(lines[1], "詠み手: ") {
-		writers = strings.TrimPrefix(lines[1], "詠み手: ")
-	}
-	return phrases, writers, true
+	return []string{parsed.Kamigo, parsed.Nakasichi, parsed.Simogo}, parsed.Writers, true
 }
 
 // buildTankaMessage builds the message content for a tanka (5 phrases).
@@ -1184,6 +1265,12 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 	if r.GuildID == "" || r.GuildID == permissions.GetAdminGuildID() {
 		return
 	}
+
+	if err := service.AdjustYomeReactionCount(r.MessageID, 1); err != nil {
+		logger.Warn("Failed to adjust yome reaction count on add",
+			"error", err, "message_id", r.MessageID)
+	}
+
 	configured := config.GetConf().Discord.TankaReaction
 	if !isTankaReaction(r.Emoji.Name, configured) {
 		return
@@ -1224,18 +1311,44 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 	mergedWriters := sliceUnique(append(existing, getWriters(extra, r.GuildID, s)...))
 
 	content := buildTankaMessage(phrases, strings.Join(mergedWriters, ", "))
-	if _, err := s.ChannelMessageSendComplex(r.ChannelID, &discordgo.MessageSend{
+	msgOut, err := s.ChannelMessageSendComplex(r.ChannelID, &discordgo.MessageSend{
 		Content:   content,
 		Reference: &discordgo.MessageReference{MessageID: r.MessageID, ChannelID: r.ChannelID, GuildID: r.GuildID},
 		AllowedMentions: &discordgo.MessageAllowedMentions{
 			Parse: []discordgo.AllowedMentionType{},
 		},
 		Flags: discordgo.MessageFlagsSuppressEmbeds,
-	}); err != nil {
+	})
+	if err != nil {
 		logger.Warn("Failed to send tanka message from reaction",
 			"error", err, "channel_id", r.ChannelID, "message_id", r.MessageID)
-	} else if err := service.RecordYome(r.GuildID); err != nil {
+		return
+	}
+	if err := service.RecordYome(model.YomeEvent{
+		ServerID:  r.GuildID,
+		ChannelID: r.ChannelID,
+		MessageID: msgOut.ID,
+		Kind:      model.YomeKindTanka,
+		Kamigo:    phrases[0],
+		Nakasichi: phrases[1],
+		Simogo:    phrases[2],
+		Nanaichi:  phrases[3],
+		Nananichi: phrases[4],
+	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", r.GuildID)
+	}
+}
+
+func messageReactionRemove(s *discordgo.Session, r *discordgo.MessageReactionRemove) {
+	if r.UserID == s.State.User.ID {
+		return
+	}
+	if r.GuildID == "" || r.GuildID == permissions.GetAdminGuildID() {
+		return
+	}
+	if err := service.AdjustYomeReactionCount(r.MessageID, -1); err != nil {
+		logger.Warn("Failed to adjust yome reaction count on remove",
+			"error", err, "message_id", r.MessageID)
 	}
 }
 

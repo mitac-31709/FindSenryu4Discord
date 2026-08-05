@@ -10,6 +10,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/cockroachdb/errors"
+	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/service"
 )
@@ -257,7 +258,7 @@ func sendRandomSenryu(s *discordgo.Session, channelID, guildID, reactionMessageI
 		}
 		return errors.New("no senryus")
 	}
-	if _, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 		Content: fmt.Sprintf("ここで一句\n「%s」\n詠み手: %s",
 			strings.Join([]string{
 				senryus[0].Kamigo,
@@ -268,11 +269,20 @@ func sendRandomSenryu(s *discordgo.Session, channelID, guildID, reactionMessageI
 			Parse: []discordgo.AllowedMentionType{},
 		},
 		Flags: discordgo.MessageFlagsSuppressEmbeds,
-	}); err != nil {
+	})
+	if err != nil {
 		logger.Warn("Failed to send senryu message", "error", err, "channel_id", channelID)
 		return err
 	}
-	if err := service.RecordYome(guildID); err != nil {
+	if err := service.RecordYome(model.YomeEvent{
+		ServerID:  guildID,
+		ChannelID: channelID,
+		MessageID: msg.ID,
+		Kind:      model.YomeKindSenryu,
+		Kamigo:    senryus[0].Kamigo,
+		Nakasichi: senryus[1].Nakasichi,
+		Simogo:    senryus[2].Simogo,
+	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", guildID)
 	}
 	return nil
