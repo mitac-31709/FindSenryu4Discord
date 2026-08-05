@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/crypto"
@@ -82,24 +83,61 @@ func TestParseDetectionReply(t *testing.T) {
 	}
 }
 
-func TestLooksLikeYomeTrigger(t *testing.T) {
+func TestParseYomeImportTrigger(t *testing.T) {
 	tests := []struct {
-		content string
-		want    bool
+		content    string
+		wantCount  int
+		wantOK     bool
 	}{
-		{"詠め", true},
-		{"短歌を詠め", true},
-		{"3回詠め", true},
-		{"2回短歌を詠め", true},
-		{"10秒間詠め", true},
-		{"3分後に詠め", true},
-		{"ここで一句\n「あ い う」", false},
-		{"川柳を検出しました！", false},
-		{"", false},
+		{"詠め", 1, true},
+		{"短歌を詠め", 1, true},
+		{"3回詠め", 3, true},
+		{"2回短歌を詠め", 2, true},
+		{"10秒間詠め", yomeTriggerUnlimited, true},
+		{"3分後に詠め", 1, true},
+		{"今日 12:00に2回詠め", 2, true},
+		{"ここで一句\n「あ い う」", 0, false},
+		{"川柳を検出しました！", 0, false},
+		{"", 0, false},
 	}
 	for _, tt := range tests {
-		if got := looksLikeYomeTrigger(tt.content); got != tt.want {
-			t.Errorf("looksLikeYomeTrigger(%q) = %v, want %v", tt.content, got, tt.want)
+		got, ok := parseYomeImportTrigger(tt.content)
+		if ok != tt.wantOK || got != tt.wantCount {
+			t.Errorf("parseYomeImportTrigger(%q) = (%d, %v), want (%d, %v)",
+				tt.content, got, ok, tt.wantCount, tt.wantOK)
+		}
+	}
+}
+
+func TestAssignYomeRequesters(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	pendings := []pendingYomeImport{
+		{Event: model.YomeEvent{MessageID: "y1", CreatedAt: base.Add(1 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y2", CreatedAt: base.Add(2 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y3", CreatedAt: base.Add(3 * time.Second)}},
+		{ReactionTanka: true, Event: model.YomeEvent{MessageID: "yt", CreatedAt: base.Add(4 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y4", CreatedAt: base.Add(5 * time.Second)}},
+		{ReplyRequester: "reply-user", Event: model.YomeEvent{MessageID: "yr", CreatedAt: base.Add(6 * time.Second)}},
+	}
+	triggers := []yomeImportTrigger{
+		{At: base, UserID: "user-a", Count: 3},
+		{At: base.Add(4500 * time.Millisecond), UserID: "user-b", Count: 1},
+	}
+
+	assignYomeRequesters(pendings, triggers)
+
+	want := map[string]string{
+		"y1": "user-a",
+		"y2": "user-a",
+		"y3": "user-a",
+		"yt": "", // reaction tanka ignored
+		"y4": "user-b",
+		"yr": "reply-user",
+	}
+	for _, p := range pendings {
+		if p.Event.RequesterID != want[p.Event.MessageID] {
+			t.Errorf("message %s requester = %q, want %q",
+				p.Event.MessageID, p.Event.RequesterID, want[p.Event.MessageID])
 		}
 	}
 }

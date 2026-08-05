@@ -2,6 +2,8 @@ package service
 
 import (
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,59 +299,155 @@ func sumMessageReactions(msg *discordgo.Message) int {
 	return total
 }
 
-func looksLikeYomeTrigger(content string) bool {
+var (
+	reImportYomeCountSenryu = regexp.MustCompile(`^(\d+)回詠め$`)
+	reImportYomeCountTanka  = regexp.MustCompile(`^(\d+)回短歌を詠め$`)
+	reImportYomeDuration    = regexp.MustCompile(`^(\d+)秒間詠め$`)
+	reImportYomeSchedCount  = regexp.MustCompile(`(\d+)回詠め$`)
+)
+
+const yomeTriggerUnlimited = -1 // 秒間詠め: assign until the next trigger
+
+// parseYomeImportTrigger returns how many bot yomes a user command should claim.
+// count == yomeTriggerUnlimited means "until the next trigger" (duration yome).
+func parseYomeImportTrigger(content string) (count int, ok bool) {
 	content = strings.TrimSpace(content)
 	if content == "" {
-		return false
+		return 0, false
 	}
-	if content == "詠め" || content == "短歌を詠め" {
-		return true
+	switch content {
+	case "詠め", "短歌を詠め":
+		return 1, true
 	}
-	if strings.HasSuffix(content, "回詠め") || strings.HasSuffix(content, "回短歌を詠め") {
-		return true
+	if m := reImportYomeDuration.FindStringSubmatch(content); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n >= 1 {
+			return yomeTriggerUnlimited, true
+		}
+		return 0, false
 	}
-	if strings.HasSuffix(content, "秒間詠め") {
-		return true
+	if m := reImportYomeCountTanka.FindStringSubmatch(content); m != nil {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n < 1 {
+			return 0, false
+		}
+		return n, true
 	}
-	if strings.Contains(content, "に") && strings.HasSuffix(content, "詠め") {
-		return true
+	if m := reImportYomeCountSenryu.FindStringSubmatch(content); m != nil {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n < 1 {
+			return 0, false
+		}
+		return n, true
 	}
-	if strings.Contains(content, "後に") && strings.Contains(content, "詠め") {
-		return true
+	// Scheduled / relative forms ending in 詠め (not tanka command body).
+	if strings.Contains(content, "短歌") {
+		return 0, false
 	}
-	return false
+	if !strings.HasSuffix(content, "詠め") {
+		return 0, false
+	}
+	if !(strings.Contains(content, "に") || strings.Contains(content, "後")) {
+		return 0, false
+	}
+	if m := reImportYomeSchedCount.FindStringSubmatch(content); m != nil {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n < 1 {
+			return 0, false
+		}
+		return n, true
+	}
+	return 1, true
 }
 
-// resolveYomeRequesterID finds who triggered a bot yome message.
-// Prefers MessageReference parent author; otherwise scans a few older messages for a yome command.
-func resolveYomeRequesterID(s *discordgo.Session, channelID string, msg *discordgo.Message, sourceBotIDs []string) string {
-	if msg == nil {
+type yomeImportTrigger struct {
+	At     time.Time
+	UserID string
+	Count  int
+}
+
+type pendingYomeImport struct {
+	Event          model.YomeEvent
+	Exists         bool
+	ReactionTanka  bool
+	ReplyRequester string
+}
+
+// isReactionTanka reports tanka posts that reply to another message (reaction extension).
+// Those cannot be attributed reliably, so requester assignment ignores them.
+func isReactionTanka(parsed ParsedYome, msg *discordgo.Message) bool {
+	return parsed.Kind == model.YomeKindTanka &&
+		msg != nil &&
+		msg.MessageReference != nil &&
+		msg.MessageReference.MessageID != ""
+}
+
+func resolveReplyRequesterID(s *discordgo.Session, channelID string, msg *discordgo.Message, sourceBotIDs []string) string {
+	if msg == nil || msg.MessageReference == nil || msg.MessageReference.MessageID == "" {
 		return ""
 	}
-	if msg.MessageReference != nil && msg.MessageReference.MessageID != "" {
-		parent, err := s.ChannelMessage(channelID, msg.MessageReference.MessageID)
-		if err == nil && parent.Author != nil && !isSourceBot(parent.Author.ID, sourceBotIDs) {
-			return parent.Author.ID
+	parent, err := s.ChannelMessage(channelID, msg.MessageReference.MessageID)
+	time.Sleep(importMessageDelay)
+	if err != nil || parent.Author == nil {
+		return ""
+	}
+	if isSourceBot(parent.Author.ID, sourceBotIDs) {
+		return ""
+	}
+	return parent.Author.ID
+}
+
+// assignYomeRequesters fills RequesterID on pending yomes.
+// Reply-to-user wins; reaction tanka are left empty; remaining are claimed by
+// chronological triggers using their count (n回詠め → n posts).
+func assignYomeRequesters(pendings []pendingYomeImport, triggers []yomeImportTrigger) {
+	sort.SliceStable(pendings, func(i, j int) bool {
+		return pendings[i].Event.CreatedAt.Before(pendings[j].Event.CreatedAt)
+	})
+	sort.SliceStable(triggers, func(i, j int) bool {
+		return triggers[i].At.Before(triggers[j].At)
+	})
+
+	for i := range pendings {
+		if pendings[i].ReplyRequester != "" {
+			pendings[i].Event.RequesterID = pendings[i].ReplyRequester
 		}
-		time.Sleep(importMessageDelay)
 	}
 
-	older, err := s.ChannelMessages(channelID, 5, msg.ID, "", "")
-	if err != nil {
-		logger.Debug("Import yome: failed to fetch older messages for requester",
-			"error", err, "message_id", msg.ID)
-		return ""
-	}
-	time.Sleep(importMessageDelay)
-	for _, m := range older {
-		if m.Author == nil || isSourceBot(m.Author.ID, sourceBotIDs) {
-			continue
+	yi := 0
+	for ti, tr := range triggers {
+		var nextAt *time.Time
+		if ti+1 < len(triggers) {
+			t := triggers[ti+1].At
+			nextAt = &t
 		}
-		if looksLikeYomeTrigger(m.Content) {
-			return m.Author.ID
+		remaining := tr.Count
+		unlimited := remaining == yomeTriggerUnlimited
+
+		for yi < len(pendings) && (unlimited || remaining > 0) {
+			p := &pendings[yi]
+			if !p.Event.CreatedAt.After(tr.At) {
+				yi++
+				continue
+			}
+			if nextAt != nil && !p.Event.CreatedAt.Before(*nextAt) {
+				break
+			}
+			if p.ReactionTanka {
+				yi++
+				continue
+			}
+			if p.Event.RequesterID != "" {
+				// Already set via reply-to-user; do not consume trigger quota.
+				yi++
+				continue
+			}
+			p.Event.RequesterID = tr.UserID
+			if !unlimited {
+				remaining--
+			}
+			yi++
 		}
 	}
-	return ""
 }
 
 // ImportYomeChannelHistory scans a channel for past bot yome messages and imports them.
@@ -377,7 +475,12 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 		}
 	}
 
-	var beforeID string
+	var (
+		pendings []pendingYomeImport
+		triggers []yomeImportTrigger
+		beforeID string
+	)
+
 	for result.Scanned < limit {
 		remaining := limit - result.Scanned
 		pageSize := channelHistoryPage
@@ -396,8 +499,18 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 		for _, msg := range messages {
 			result.Scanned++
 			beforeID = msg.ID
+			if msg.Author == nil {
+				continue
+			}
 
-			if msg.Author == nil || !isSourceBot(msg.Author.ID, opts.SourceBotIDs) {
+			if !isSourceBot(msg.Author.ID, opts.SourceBotIDs) {
+				if count, ok := parseYomeImportTrigger(msg.Content); ok {
+					triggers = append(triggers, yomeImportTrigger{
+						At:     msg.Timestamp.UTC(),
+						UserID: msg.Author.ID,
+						Count:  count,
+					})
+				}
 				continue
 			}
 
@@ -418,59 +531,73 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 				continue
 			}
 
-			event := model.YomeEvent{
-				ServerID:      guildID,
-				ChannelID:     opts.ChannelID,
-				MessageID:     msg.ID,
-				RequesterID:   resolveYomeRequesterID(s, opts.ChannelID, msg, opts.SourceBotIDs),
-				Kind:          parsed.Kind,
-				Kamigo:        parsed.Kamigo,
-				Nakasichi:     parsed.Nakasichi,
-				Simogo:        parsed.Simogo,
-				Nanaichi:      parsed.Nanaichi,
-				Nananichi:     parsed.Nananichi,
-				ReactionCount: sumMessageReactions(msg),
-				CreatedAt:     msg.Timestamp.UTC(),
-			}
-
-			if opts.DryRun {
-				if exists {
-					result.Updated++
-				} else {
-					result.Imported++
-				}
-				time.Sleep(importMessageDelay)
-				continue
-			}
-
-			if exists {
-				if err := UpdateYomeByMessageID(event); err != nil {
-					result.Errors++
-					logger.Warn("Import yome: failed to update",
-						"error", err,
-						"message_id", msg.ID,
-					)
-					continue
-				}
-				result.Updated++
+			reactionTanka := isReactionTanka(parsed, msg)
+			replyRequester := ""
+			if !reactionTanka {
+				replyRequester = resolveReplyRequesterID(s, opts.ChannelID, msg, opts.SourceBotIDs)
 			} else {
-				if err := RecordYome(event); err != nil {
-					result.Errors++
-					logger.Warn("Import yome: failed to record",
-						"error", err,
-						"message_id", msg.ID,
-					)
-					continue
-				}
-				result.Imported++
+				// Still consume rate limit if we peeked at the reference target? skip fetch.
 			}
-			time.Sleep(importMessageDelay)
+
+			pendings = append(pendings, pendingYomeImport{
+				Exists:         exists,
+				ReactionTanka:  reactionTanka,
+				ReplyRequester: replyRequester,
+				Event: model.YomeEvent{
+					ServerID:      guildID,
+					ChannelID:     opts.ChannelID,
+					MessageID:     msg.ID,
+					Kind:          parsed.Kind,
+					Kamigo:        parsed.Kamigo,
+					Nakasichi:     parsed.Nakasichi,
+					Simogo:        parsed.Simogo,
+					Nanaichi:      parsed.Nanaichi,
+					Nananichi:     parsed.Nananichi,
+					ReactionCount: sumMessageReactions(msg),
+					CreatedAt:     msg.Timestamp.UTC(),
+				},
+			})
 		}
 
 		if len(messages) < pageSize {
 			break
 		}
 		time.Sleep(importPageDelay)
+	}
+
+	assignYomeRequesters(pendings, triggers)
+
+	for _, p := range pendings {
+		if opts.DryRun {
+			if p.Exists {
+				result.Updated++
+			} else {
+				result.Imported++
+			}
+			continue
+		}
+		if p.Exists {
+			if err := UpdateYomeByMessageID(p.Event); err != nil {
+				result.Errors++
+				logger.Warn("Import yome: failed to update",
+					"error", err,
+					"message_id", p.Event.MessageID,
+				)
+				continue
+			}
+			result.Updated++
+		} else {
+			if err := RecordYome(p.Event); err != nil {
+				result.Errors++
+				logger.Warn("Import yome: failed to record",
+					"error", err,
+					"message_id", p.Event.MessageID,
+				)
+				continue
+			}
+			result.Imported++
+		}
+		time.Sleep(importMessageDelay)
 	}
 
 	logger.Info("Channel yome import finished",
@@ -484,6 +611,7 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 		"imported", result.Imported,
 		"updated", result.Updated,
 		"skipped_duplicate", result.SkippedDuplicate,
+		"triggers", len(triggers),
 		"errors", result.Errors,
 	)
 
