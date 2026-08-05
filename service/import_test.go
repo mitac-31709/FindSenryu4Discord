@@ -85,43 +85,49 @@ func TestParseDetectionReply(t *testing.T) {
 
 func TestParseYomeImportTrigger(t *testing.T) {
 	tests := []struct {
-		content    string
-		wantCount  int
-		wantOK     bool
+		content        string
+		wantCount      int
+		wantDurationSec int
+		wantOK         bool
 	}{
-		{"詠め", 1, true},
-		{"短歌を詠め", 1, true},
-		{"3回詠め", 3, true},
-		{"2回短歌を詠め", 2, true},
-		{"10秒間詠め", yomeTriggerUnlimited, true},
-		{"3分後に詠め", 1, true},
-		{"今日 12:00に2回詠め", 2, true},
-		{"ここで一句\n「あ い う」", 0, false},
-		{"川柳を検出しました！", 0, false},
-		{"", 0, false},
+		{"詠め", 1, 0, true},
+		{"短歌を詠め", 1, 0, true},
+		{"3回詠め", 3, 0, true},
+		{"2回短歌を詠め", 2, 0, true},
+		{"10秒間詠め", 0, 10, true},
+		{"3分後に詠め", 1, 0, true},
+		{"今日 12:00に2回詠め", 2, 0, true},
+		{"ここで一句\n「あ い う」", 0, 0, false},
+		{"川柳を検出しました！", 0, 0, false},
+		{"", 0, 0, false},
 	}
 	for _, tt := range tests {
-		got, ok := parseYomeImportTrigger(tt.content)
-		if ok != tt.wantOK || got != tt.wantCount {
-			t.Errorf("parseYomeImportTrigger(%q) = (%d, %v), want (%d, %v)",
-				tt.content, got, ok, tt.wantCount, tt.wantOK)
+		gotCount, gotDur, ok := parseYomeImportTrigger(tt.content)
+		if ok != tt.wantOK || gotCount != tt.wantCount || gotDur != tt.wantDurationSec {
+			t.Errorf("parseYomeImportTrigger(%q) = (%d, %d, %v), want (%d, %d, %v)",
+				tt.content, gotCount, gotDur, ok, tt.wantCount, tt.wantDurationSec, tt.wantOK)
 		}
 	}
 }
 
-func TestAssignYomeRequesters(t *testing.T) {
+func TestAssignYomeRequesters_FIFOスタック(t *testing.T) {
 	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	// A 5回詠め and B 3回詠め arrive close together; bot drains A then B.
 	pendings := []pendingYomeImport{
 		{Event: model.YomeEvent{MessageID: "y1", CreatedAt: base.Add(1 * time.Second)}},
 		{Event: model.YomeEvent{MessageID: "y2", CreatedAt: base.Add(2 * time.Second)}},
 		{Event: model.YomeEvent{MessageID: "y3", CreatedAt: base.Add(3 * time.Second)}},
-		{ReactionTanka: true, Event: model.YomeEvent{MessageID: "yt", CreatedAt: base.Add(4 * time.Second)}},
-		{Event: model.YomeEvent{MessageID: "y4", CreatedAt: base.Add(5 * time.Second)}},
-		{ReplyRequester: "reply-user", Event: model.YomeEvent{MessageID: "yr", CreatedAt: base.Add(6 * time.Second)}},
+		{ReactionTanka: true, Event: model.YomeEvent{MessageID: "yt", CreatedAt: base.Add(3500 * time.Millisecond)}},
+		{Event: model.YomeEvent{MessageID: "y4", CreatedAt: base.Add(4 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y5", CreatedAt: base.Add(5 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y6", CreatedAt: base.Add(6 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y7", CreatedAt: base.Add(7 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y8", CreatedAt: base.Add(8 * time.Second)}},
+		{ReplyRequester: "reply-user", Event: model.YomeEvent{MessageID: "yr", CreatedAt: base.Add(9 * time.Second)}},
 	}
 	triggers := []yomeImportTrigger{
-		{At: base, UserID: "user-a", Count: 3},
-		{At: base.Add(4500 * time.Millisecond), UserID: "user-b", Count: 1},
+		{At: base, UserID: "user-a", Count: 5},
+		{At: base.Add(500 * time.Millisecond), UserID: "user-b", Count: 3},
 	}
 
 	assignYomeRequesters(pendings, triggers)
@@ -130,8 +136,12 @@ func TestAssignYomeRequesters(t *testing.T) {
 		"y1": "user-a",
 		"y2": "user-a",
 		"y3": "user-a",
-		"yt": "", // reaction tanka ignored
-		"y4": "user-b",
+		"yt": "", // reaction tanka ignored, does not consume quota
+		"y4": "user-a",
+		"y5": "user-a",
+		"y6": "user-b",
+		"y7": "user-b",
+		"y8": "user-b",
 		"yr": "reply-user",
 	}
 	for _, p := range pendings {
@@ -142,24 +152,20 @@ func TestAssignYomeRequesters(t *testing.T) {
 	}
 }
 
-func TestAssignYomeRequesters_秒間詠めと回数詠めの混在(t *testing.T) {
+func TestAssignYomeRequesters_秒間詠め中の拒否トリガーは無視(t *testing.T) {
 	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
-	// user-a: 10秒間詠め → posts d1..d4
-	// user-b: 2回詠め → posts c1,c2
-	// user-c: 詠め → post c3
 	pendings := []pendingYomeImport{
 		{Event: model.YomeEvent{MessageID: "d1", CreatedAt: base.Add(1 * time.Second)}},
 		{Event: model.YomeEvent{MessageID: "d2", CreatedAt: base.Add(2 * time.Second)}},
-		{Event: model.YomeEvent{MessageID: "d3", CreatedAt: base.Add(3 * time.Second)}},
-		{Event: model.YomeEvent{MessageID: "d4", CreatedAt: base.Add(4 * time.Second)}},
-		{Event: model.YomeEvent{MessageID: "c1", CreatedAt: base.Add(11 * time.Second)}},
-		{Event: model.YomeEvent{MessageID: "c2", CreatedAt: base.Add(12 * time.Second)}},
-		{Event: model.YomeEvent{MessageID: "c3", CreatedAt: base.Add(20 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "d3", CreatedAt: base.Add(5 * time.Second)}}, // after rejected msg
+		{Event: model.YomeEvent{MessageID: "d4", CreatedAt: base.Add(8 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "c1", CreatedAt: base.Add(12 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "c2", CreatedAt: base.Add(13 * time.Second)}},
 	}
 	triggers := []yomeImportTrigger{
-		{At: base, UserID: "user-a", Count: yomeTriggerUnlimited},
-		{At: base.Add(10 * time.Second), UserID: "user-b", Count: 2},
-		{At: base.Add(19 * time.Second), UserID: "user-c", Count: 1},
+		{At: base, UserID: "user-a", DurationSec: 10},
+		{At: base.Add(4 * time.Second), UserID: "user-b", Count: 3}, // rejected during duration
+		{At: base.Add(11 * time.Second), UserID: "user-c", Count: 2},
 	}
 
 	assignYomeRequesters(pendings, triggers)
@@ -169,14 +175,64 @@ func TestAssignYomeRequesters_秒間詠めと回数詠めの混在(t *testing.T)
 		"d2": "user-a",
 		"d3": "user-a",
 		"d4": "user-a",
-		"c1": "user-b",
-		"c2": "user-b",
-		"c3": "user-c",
+		"c1": "user-c",
+		"c2": "user-c",
 	}
 	for _, p := range pendings {
 		if p.Event.RequesterID != want[p.Event.MessageID] {
 			t.Errorf("message %s requester = %q, want %q",
 				p.Event.MessageID, p.Event.RequesterID, want[p.Event.MessageID])
+		}
+	}
+}
+
+func TestAssignYomeRequesters_間隔空きでスタック切断(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	pendings := []pendingYomeImport{
+		{Event: model.YomeEvent{MessageID: "y1", CreatedAt: base.Add(1 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y2", CreatedAt: base.Add(2 * time.Second)}},
+		// >5s between consecutive claimed posts — cut user-a here
+		{Event: model.YomeEvent{MessageID: "y3", CreatedAt: base.Add(8 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y4", CreatedAt: base.Add(9 * time.Second)}},
+	}
+	triggers := []yomeImportTrigger{
+		{At: base, UserID: "user-a", Count: 5}, // only gets y1,y2 then gap cut
+		{At: base.Add(7 * time.Second), UserID: "user-b", Count: 2},
+	}
+
+	assignYomeRequesters(pendings, triggers)
+
+	want := map[string]string{
+		"y1": "user-a",
+		"y2": "user-a",
+		"y3": "user-b",
+		"y4": "user-b",
+	}
+	for _, p := range pendings {
+		if p.Event.RequesterID != want[p.Event.MessageID] {
+			t.Errorf("message %s requester = %q, want %q",
+				p.Event.MessageID, p.Event.RequesterID, want[p.Event.MessageID])
+		}
+	}
+}
+
+func TestAssignYomeRequesters_トリガーから初回投稿は間隔判定しない(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	// First bot post is 8s after trigger (>5s); still assigned because gap is
+	// only between consecutive claimed posts.
+	pendings := []pendingYomeImport{
+		{Event: model.YomeEvent{MessageID: "y1", CreatedAt: base.Add(8 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "y2", CreatedAt: base.Add(9 * time.Second)}},
+	}
+	triggers := []yomeImportTrigger{
+		{At: base, UserID: "user-a", Count: 2},
+	}
+
+	assignYomeRequesters(pendings, triggers)
+
+	for _, p := range pendings {
+		if p.Event.RequesterID != "user-a" {
+			t.Errorf("message %s requester = %q, want user-a", p.Event.MessageID, p.Event.RequesterID)
 		}
 	}
 }

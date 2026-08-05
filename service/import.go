@@ -306,63 +306,69 @@ var (
 	reImportYomeSchedCount  = regexp.MustCompile(`(\d+)回詠め$`)
 )
 
-const yomeTriggerUnlimited = -1 // 秒間詠め: assign until the next trigger
+// yomeImportStackGap is the max gap between consecutive posts claimed by one
+// count trigger. Larger gaps cut that trigger so later posts are not dragged
+// onto earlier (possibly rejected/idle) commands.
+const yomeImportStackGap = 5 * time.Second
 
-// parseYomeImportTrigger returns how many bot yomes a user command should claim.
-// count == yomeTriggerUnlimited means "until the next trigger" (duration yome).
-func parseYomeImportTrigger(content string) (count int, ok bool) {
+// parseYomeImportTrigger parses a user yome command into count and/or duration.
+// DurationSec > 0 means 秒間詠め (claim posts in (at, at+duration]).
+// Count > 0 means claim that many later unassigned posts (FIFO stack).
+func parseYomeImportTrigger(content string) (count, durationSec int, ok bool) {
 	content = strings.TrimSpace(content)
 	if content == "" {
-		return 0, false
+		return 0, 0, false
 	}
 	switch content {
 	case "詠め", "短歌を詠め":
-		return 1, true
+		return 1, 0, true
 	}
 	if m := reImportYomeDuration.FindStringSubmatch(content); m != nil {
-		if n, err := strconv.Atoi(m[1]); err == nil && n >= 1 {
-			return yomeTriggerUnlimited, true
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n < 1 {
+			return 0, 0, false
 		}
-		return 0, false
+		return 0, n, true
 	}
 	if m := reImportYomeCountTanka.FindStringSubmatch(content); m != nil {
 		n, err := strconv.Atoi(m[1])
 		if err != nil || n < 1 {
-			return 0, false
+			return 0, 0, false
 		}
-		return n, true
+		return n, 0, true
 	}
 	if m := reImportYomeCountSenryu.FindStringSubmatch(content); m != nil {
 		n, err := strconv.Atoi(m[1])
 		if err != nil || n < 1 {
-			return 0, false
+			return 0, 0, false
 		}
-		return n, true
+		return n, 0, true
 	}
 	// Scheduled / relative forms ending in 詠め (not tanka command body).
 	if strings.Contains(content, "短歌") {
-		return 0, false
+		return 0, 0, false
 	}
 	if !strings.HasSuffix(content, "詠め") {
-		return 0, false
+		return 0, 0, false
 	}
 	if !(strings.Contains(content, "に") || strings.Contains(content, "後")) {
-		return 0, false
+		return 0, 0, false
 	}
 	if m := reImportYomeSchedCount.FindStringSubmatch(content); m != nil {
 		n, err := strconv.Atoi(m[1])
 		if err != nil || n < 1 {
-			return 0, false
+			return 0, 0, false
 		}
-		return n, true
+		return n, 0, true
 	}
-	return 1, true
+	return 1, 0, true
 }
 
 type yomeImportTrigger struct {
-	At     time.Time
-	UserID string
-	Count  int
+	At          time.Time
+	UserID      string
+	Count       int // n回詠め / 詠め
+	DurationSec int // 秒間詠め
 }
 
 type pendingYomeImport struct {
@@ -396,14 +402,41 @@ func resolveReplyRequesterID(s *discordgo.Session, channelID string, msg *discor
 	return parent.Author.ID
 }
 
-// assignYomeRequesters fills RequesterID on pending yomes.
-// Reply-to-user wins; reaction tanka are left empty; remaining are claimed by
-// chronological triggers using their count (n回詠め → n posts).
+func pendingAssignable(p *pendingYomeImport) bool {
+	return !p.ReactionTanka && p.Event.RequesterID == ""
+}
+
+// triggerInsideEarlierDuration reports triggers that fall inside an earlier
+// 秒間詠め window (live bot rejects those; import must ignore them).
+func triggerInsideEarlierDuration(tr yomeImportTrigger, earlier []yomeImportTrigger) bool {
+	for _, other := range earlier {
+		if other.DurationSec <= 0 {
+			continue
+		}
+		end := other.At.Add(time.Duration(other.DurationSec) * time.Second)
+		if tr.At.After(other.At) && !tr.At.After(end) {
+			return true
+		}
+	}
+	return false
+}
+
+// assignYomeRequesters fills RequesterID assuming the bot drains 詠め commands FIFO.
+// - Reply-to-user wins up front.
+// - Reaction tanka are never attributed.
+// - Triggers inside an earlier 秒間詠め window are ignored (rejected live).
+// - 秒間詠め claims unassigned posts in (at, at+duration].
+// - n回詠め / 詠め claim the next N unassigned posts after at (stack order).
+// - Gaps larger than yomeImportStackGap between consecutive claimed posts cut
+//   that count trigger so later posts are not dragged onto earlier commands.
 func assignYomeRequesters(pendings []pendingYomeImport, triggers []yomeImportTrigger) {
 	sort.SliceStable(pendings, func(i, j int) bool {
 		return pendings[i].Event.CreatedAt.Before(pendings[j].Event.CreatedAt)
 	})
 	sort.SliceStable(triggers, func(i, j int) bool {
+		if triggers[i].At.Equal(triggers[j].At) {
+			return i < j
+		}
 		return triggers[i].At.Before(triggers[j].At)
 	})
 
@@ -413,39 +446,51 @@ func assignYomeRequesters(pendings []pendingYomeImport, triggers []yomeImportTri
 		}
 	}
 
-	yi := 0
 	for ti, tr := range triggers {
-		var nextAt *time.Time
-		if ti+1 < len(triggers) {
-			t := triggers[ti+1].At
-			nextAt = &t
+		if triggerInsideEarlierDuration(tr, triggers[:ti]) {
+			continue
+		}
+
+		if tr.DurationSec > 0 {
+			endAt := tr.At.Add(time.Duration(tr.DurationSec) * time.Second)
+			for i := range pendings {
+				p := &pendings[i]
+				if !pendingAssignable(p) {
+					continue
+				}
+				t := p.Event.CreatedAt
+				if !t.After(tr.At) || t.After(endAt) {
+					continue
+				}
+				p.Event.RequesterID = tr.UserID
+			}
+			continue
+		}
+
+		if tr.Count < 1 {
+			continue
 		}
 		remaining := tr.Count
-		unlimited := remaining == yomeTriggerUnlimited
-
-		for yi < len(pendings) && (unlimited || remaining > 0) {
-			p := &pendings[yi]
-			if !p.Event.CreatedAt.After(tr.At) {
-				yi++
-				continue
-			}
-			if nextAt != nil && !p.Event.CreatedAt.Before(*nextAt) {
+		var lastAssigned time.Time
+		hasAssigned := false
+		for i := range pendings {
+			if remaining <= 0 {
 				break
 			}
-			if p.ReactionTanka {
-				yi++
+			p := &pendings[i]
+			if !pendingAssignable(p) {
 				continue
 			}
-			if p.Event.RequesterID != "" {
-				// Already set via reply-to-user; do not consume trigger quota.
-				yi++
+			if !p.Event.CreatedAt.After(tr.At) {
 				continue
+			}
+			if hasAssigned && p.Event.CreatedAt.Sub(lastAssigned) > yomeImportStackGap {
+				break
 			}
 			p.Event.RequesterID = tr.UserID
-			if !unlimited {
-				remaining--
-			}
-			yi++
+			lastAssigned = p.Event.CreatedAt
+			hasAssigned = true
+			remaining--
 		}
 	}
 }
@@ -504,11 +549,12 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 			}
 
 			if !isSourceBot(msg.Author.ID, opts.SourceBotIDs) {
-				if count, ok := parseYomeImportTrigger(msg.Content); ok {
+				if count, durationSec, ok := parseYomeImportTrigger(msg.Content); ok {
 					triggers = append(triggers, yomeImportTrigger{
-						At:     msg.Timestamp.UTC(),
-						UserID: msg.Author.ID,
-						Count:  count,
+						At:          msg.Timestamp.UTC(),
+						UserID:      msg.Author.ID,
+						Count:       count,
+						DurationSec: durationSec,
 					})
 				}
 				continue
