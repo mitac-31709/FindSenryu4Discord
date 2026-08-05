@@ -142,6 +142,45 @@ func TestAssignYomeRequesters(t *testing.T) {
 	}
 }
 
+func TestAssignYomeRequesters_秒間詠めと回数詠めの混在(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	// user-a: 10秒間詠め → posts d1..d4
+	// user-b: 2回詠め → posts c1,c2
+	// user-c: 詠め → post c3
+	pendings := []pendingYomeImport{
+		{Event: model.YomeEvent{MessageID: "d1", CreatedAt: base.Add(1 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "d2", CreatedAt: base.Add(2 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "d3", CreatedAt: base.Add(3 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "d4", CreatedAt: base.Add(4 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "c1", CreatedAt: base.Add(11 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "c2", CreatedAt: base.Add(12 * time.Second)}},
+		{Event: model.YomeEvent{MessageID: "c3", CreatedAt: base.Add(20 * time.Second)}},
+	}
+	triggers := []yomeImportTrigger{
+		{At: base, UserID: "user-a", Count: yomeTriggerUnlimited},
+		{At: base.Add(10 * time.Second), UserID: "user-b", Count: 2},
+		{At: base.Add(19 * time.Second), UserID: "user-c", Count: 1},
+	}
+
+	assignYomeRequesters(pendings, triggers)
+
+	want := map[string]string{
+		"d1": "user-a",
+		"d2": "user-a",
+		"d3": "user-a",
+		"d4": "user-a",
+		"c1": "user-b",
+		"c2": "user-b",
+		"c3": "user-c",
+	}
+	for _, p := range pendings {
+		if p.Event.RequesterID != want[p.Event.MessageID] {
+			t.Errorf("message %s requester = %q, want %q",
+				p.Event.MessageID, p.Event.RequesterID, want[p.Event.MessageID])
+		}
+	}
+}
+
 func TestResolveImportLimit(t *testing.T) {
 	if got := resolveImportLimit(0); got != defaultImportLimit {
 		t.Errorf("0 -> %d, want %d", got, defaultImportLimit)
