@@ -9,6 +9,7 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/db"
 	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/crypto"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 )
@@ -76,6 +77,12 @@ func decryptSenryuSlice(senryus []model.Senryu) error {
 // CreateSenryu creates a new senryu record
 func CreateSenryu(s model.Senryu) (model.Senryu, error) {
 	metrics.RecordDatabaseOperation("create_senryu")
+
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = jst.Now()
+	} else {
+		s.CreatedAt = jst.To(s.CreatedAt)
+	}
 
 	// Encrypt a copy for DB storage; keep the original fields intact for the caller
 	dbRecord := s

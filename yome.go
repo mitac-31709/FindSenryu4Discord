@@ -11,6 +11,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/cockroachdb/errors"
 	"github.com/u16-io/FindSenryu4Discord/model"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/service"
 )
@@ -62,11 +63,7 @@ var (
 
 // loadJST returns the Asia/Tokyo location, falling back to a fixed UTC+9 zone.
 func loadJST() *time.Location {
-	loc, err := time.LoadLocation("Asia/Tokyo")
-	if err != nil {
-		return time.FixedZone("JST", 9*60*60)
-	}
-	return loc
+	return jst.Location()
 }
 
 // parseYomeRequest parses immediate / scheduled / duration senryu yome commands.
@@ -283,6 +280,7 @@ func sendRandomSenryu(s *discordgo.Session, channelID, guildID, reactionMessageI
 		Kamigo:      senryus[0].Kamigo,
 		Nakasichi:   senryus[1].Nakasichi,
 		Simogo:      senryus[2].Simogo,
+		CreatedAt:   jst.To(msg.Timestamp),
 	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", guildID)
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/u16-io/FindSenryu4Discord/db"
 	"github.com/u16-io/FindSenryu4Discord/model"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 )
@@ -19,11 +20,11 @@ func CreateScheduledYome(guildID, channelID, requesterID string, runAt time.Time
 	yome := model.ScheduledYome{
 		GuildID:     guildID,
 		ChannelID:   channelID,
-		RunAt:       runAt,
+		RunAt:       jst.To(runAt),
 		Count:       count,
 		RequesterID: requesterID,
 		Status:      model.ScheduledYomePending,
-		CreatedAt:   time.Now(),
+		CreatedAt:   jst.Now(),
 	}
 	if err := db.DB.Create(&yome).Error; err != nil {
 		metrics.RecordError("database")
@@ -43,7 +44,7 @@ func ListDuePendingScheduledYomes(now time.Time) ([]model.ScheduledYome, error) 
 
 	var yomes []model.ScheduledYome
 	if err := db.DB.
-		Where("status = ? AND run_at <= ?", model.ScheduledYomePending, now).
+		Where("status = ? AND run_at <= ?", model.ScheduledYomePending, jst.To(now)).
 		Order("run_at ASC").
 		Find(&yomes).Error; err != nil {
 		metrics.RecordError("database")

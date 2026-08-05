@@ -9,6 +9,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/detect"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 	"github.com/u16-io/FindSenryu4Discord/pkg/permissions"
@@ -129,6 +130,7 @@ func HandleRescanSave(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			Nakasichi: parts[1],
 			Simogo:    parts[2],
 			Spoiler:   &sp,
+			CreatedAt: jst.To(msg.Timestamp),
 		}); err != nil {
 			logger.Error("Rescan save: failed to create senryu", "error", err, "match", match)
 			continue

@@ -7,6 +7,7 @@ import (
 	"github.com/jinzhu/gorm"
 	"github.com/u16-io/FindSenryu4Discord/db"
 	"github.com/u16-io/FindSenryu4Discord/model"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 )
@@ -16,7 +17,9 @@ func RecordYome(event model.YomeEvent) error {
 	metrics.RecordDatabaseOperation("record_yome")
 
 	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now()
+		event.CreatedAt = jst.Now()
+	} else {
+		event.CreatedAt = jst.To(event.CreatedAt)
 	}
 	if err := db.DB.Create(&event).Error; err != nil {
 		metrics.RecordError("database")
@@ -66,7 +69,7 @@ func UpdateYomeByMessageID(event model.YomeEvent) error {
 		"nanaichi":       event.Nanaichi,
 		"nananichi":      event.Nananichi,
 		"reaction_count": event.ReactionCount,
-		"created_at":     event.CreatedAt,
+		"created_at":     jst.To(event.CreatedAt),
 	}
 	if err := db.DB.Model(&model.YomeEvent{}).
 		Where("message_id = ?", event.MessageID).

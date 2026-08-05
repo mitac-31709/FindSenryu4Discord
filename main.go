@@ -21,6 +21,7 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/pkg/crypto"
 	"github.com/u16-io/FindSenryu4Discord/pkg/detect"
 	"github.com/u16-io/FindSenryu4Discord/pkg/health"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 	"github.com/u16-io/FindSenryu4Discord/pkg/permissions"
@@ -751,6 +752,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			Nakasichi: parts[1],
 			Simogo:    parts[2],
 			Spoiler:   &spoiler,
+			CreatedAt: jst.To(m.Timestamp),
 		})
 		if err != nil {
 			logger.Error("Failed to create senryu", "error", err)
@@ -1189,6 +1191,7 @@ func sendRandomTanka(s *discordgo.Session, channelID, guildID, reactionMessageID
 		Simogo:      phrases[2],
 		Nanaichi:    phrases[3],
 		Nananichi:   phrases[4],
+		CreatedAt:   jst.To(msg.Timestamp),
 	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", guildID)
 	}
@@ -1375,6 +1378,7 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 		Simogo:      phrases[2],
 		Nanaichi:    phrases[3],
 		Nananichi:   phrases[4],
+		CreatedAt:   jst.To(msgOut.Timestamp),
 	}); err != nil {
 		logger.Warn("Failed to record yome", "error", err, "guild_id", r.GuildID)
 	}

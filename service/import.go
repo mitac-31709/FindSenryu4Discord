@@ -10,6 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/cockroachdb/errors"
 	"github.com/u16-io/FindSenryu4Discord/model"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 )
 
@@ -225,7 +226,7 @@ func importDetectionChannelHistory(s *discordgo.Session, opts ImportOptions) (Im
 				Simogo:          parsed.Simogo,
 				Spoiler:         &spoiler,
 				SourceMessageID: msg.ID,
-				CreatedAt:       parent.Timestamp.UTC(),
+				CreatedAt:       jst.To(parent.Timestamp),
 			}
 
 			if opts.DryRun {
@@ -551,7 +552,7 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 			if !isSourceBot(msg.Author.ID, opts.SourceBotIDs) {
 				if count, durationSec, ok := parseYomeImportTrigger(msg.Content); ok {
 					triggers = append(triggers, yomeImportTrigger{
-						At:          msg.Timestamp.UTC(),
+						At:          jst.To(msg.Timestamp),
 						UserID:      msg.Author.ID,
 						Count:       count,
 						DurationSec: durationSec,
@@ -600,7 +601,7 @@ func ImportYomeChannelHistory(s *discordgo.Session, opts ImportOptions) (ImportR
 					Nanaichi:      parsed.Nanaichi,
 					Nananichi:     parsed.Nananichi,
 					ReactionCount: sumMessageReactions(msg),
-					CreatedAt:     msg.Timestamp.UTC(),
+					CreatedAt:     jst.To(msg.Timestamp),
 				},
 			})
 		}

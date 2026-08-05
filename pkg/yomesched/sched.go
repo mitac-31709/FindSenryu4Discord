@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/service"
 )
@@ -69,7 +70,7 @@ func (m *Manager) run() {
 }
 
 func (m *Manager) tick() {
-	due, err := service.ListDuePendingScheduledYomes(time.Now())
+	due, err := service.ListDuePendingScheduledYomes(jst.Now())
 	if err != nil {
 		logger.Warn("Failed to list due scheduled yomes", "error", err)
 		return

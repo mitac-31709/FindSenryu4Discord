@@ -16,6 +16,7 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/config"
 	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/crypto"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 
 	// SQLite3 driver for Gorm
@@ -87,6 +88,9 @@ func initDB() error {
 
 		logger.Info("Connected to SQLite database", "path", conf.Database.Path)
 	}
+
+	// Store timestamps in JST so live records match Discord import and daily JST reports.
+	gorm.NowFunc = jst.Now
 
 	// Configure connection pool
 	sqlDB := DB.DB()

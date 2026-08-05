@@ -9,6 +9,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/u16-io/FindSenryu4Discord/db"
 	"github.com/u16-io/FindSenryu4Discord/model"
+	"github.com/u16-io/FindSenryu4Discord/pkg/jst"
 )
 
 func setupYomeTestDB(t *testing.T) {
@@ -45,6 +46,36 @@ func TestRecordYome_句付きで記録できる(t *testing.T) {
 	}
 	if event.Kamigo != "古池や" || event.Kind != model.YomeKindSenryu {
 		t.Errorf("event = %+v", event)
+	}
+}
+
+func TestRecordYome_CreatedAtはJSTで保存される(t *testing.T) {
+	setupYomeTestDB(t)
+
+	utc := time.Date(2026, 8, 6, 3, 0, 0, 0, time.UTC) // 12:00 JST
+	if err := RecordYome(model.YomeEvent{
+		ServerID:  "guild1",
+		MessageID: "msg-jst",
+		Kind:      model.YomeKindSenryu,
+		Kamigo:    "あ",
+		Nakasichi: "い",
+		Simogo:    "う",
+		CreatedAt: utc,
+	}); err != nil {
+		t.Fatalf("RecordYome failed: %v", err)
+	}
+
+	var event model.YomeEvent
+	if err := db.DB.Where("message_id = ?", "msg-jst").First(&event).Error; err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !event.CreatedAt.Equal(utc) {
+		t.Errorf("CreatedAt instant = %v, want %v", event.CreatedAt, utc)
+	}
+	// Wall clock stored for SQLite string compares should be JST (12:00).
+	got := jst.To(event.CreatedAt)
+	if h, m, s := got.Clock(); h != 12 || m != 0 || s != 0 {
+		t.Errorf("JST wall = %02d:%02d:%02d, want 12:00:00", h, m, s)
 	}
 }
 
