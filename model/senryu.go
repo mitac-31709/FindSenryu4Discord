@@ -42,11 +42,26 @@ type Metadata struct {
 	Value string `gorm:"column:value;not null"`
 }
 
+// Yome kind values.
+const (
+	YomeKindSenryu = "senryu"
+	YomeKindTanka  = "tanka"
+)
+
 // YomeEvent records one successful bot yome (senryu or tanka) send.
 type YomeEvent struct {
-	ID        int       `gorm:"primaryKey;autoIncrement"`
-	ServerID  string    `gorm:"column:server_id;index"`
-	CreatedAt time.Time `gorm:"column:created_at;index"`
+	ID            int       `gorm:"primaryKey;autoIncrement"`
+	ServerID      string    `gorm:"column:server_id;index"`
+	ChannelID     string    `gorm:"column:channel_id"`
+	MessageID     string    `gorm:"column:message_id"`
+	Kind          string    `gorm:"column:kind"`
+	Kamigo        string    `gorm:"column:kamigo"`
+	Nakasichi     string    `gorm:"column:nakasichi"`
+	Simogo        string    `gorm:"column:simogo"`
+	Nanaichi      string    `gorm:"column:nanaichi"`
+	Nananichi     string    `gorm:"column:nananichi"`
+	ReactionCount int       `gorm:"column:reaction_count;not null;default:0"`
+	CreatedAt     time.Time `gorm:"column:created_at;index"`
 }
 
 // TableName returns the table name for YomeEvent.

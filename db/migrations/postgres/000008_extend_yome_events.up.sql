@@ -1,0 +1,11 @@
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS channel_id TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS message_id TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS kind TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS kamigo TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS nakasichi TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS simogo TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS nanaichi TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS nananichi TEXT;
+ALTER TABLE yome_events ADD COLUMN IF NOT EXISTS reaction_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_yome_events_message_id ON yome_events(message_id);
