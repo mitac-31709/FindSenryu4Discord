@@ -936,7 +936,7 @@ func formatPhraseRanks(ranks []service.PhraseRank) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%d. 「%s」 — %d回", i+1, r.Phrase, r.Count)
+		fmt.Fprintf(&b, "%d. 「%s」 — 詠んだ回数 %d", i+1, r.Phrase, r.Count)
 	}
 	return b.String()
 }
@@ -950,7 +950,7 @@ func formatReactionRanks(events []model.YomeEvent) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%d. 「%s」 — %d", i+1, service.FormatYomeText(e), e.ReactionCount)
+		fmt.Fprintf(&b, "%d. 「%s」 — 詠まれた回数 %d", i+1, service.FormatYomeText(e), e.ReactionCount)
 	}
 	return b.String()
 }
